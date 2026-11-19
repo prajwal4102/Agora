@@ -4,6 +4,8 @@ import type { NextConfig } from 'next'
 const nextConfig: NextConfig = {
   // Enable React strict mode
   reactStrictMode: true,
+  // Let the dev server accept requests arriving through the public tunnel.
+  allowedDevOrigins: (process.env.PUBLIC_HOSTS ?? '*.ngrok-free.dev,*.ngrok-free.app').split(','),
   turbopack: {
     root: path.resolve(__dirname, '..'),
   },
@@ -19,19 +21,11 @@ const nextConfig: NextConfig = {
       return []
     }
 
+    // One public address serves everything: phones need HTTPS for the
+    // microphone, and Agora cloud needs to reach the MCP tool server.
     return [
-      {
-        source: '/api/get_config',
-        destination: `${backendUrl}/get_config`,
-      },
-      {
-        source: '/api/startAgent',
-        destination: `${backendUrl}/startAgent`,
-      },
-      {
-        source: '/api/stopAgent',
-        destination: `${backendUrl}/stopAgent`,
-      },
+      { source: '/api/:path*', destination: `${backendUrl}/:path*` },
+      { source: '/mcp', destination: `${backendUrl}/mcp` },
     ]
   },
 }

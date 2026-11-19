@@ -2,6 +2,9 @@ import type { RTMClient } from 'agora-rtm';
 
 export type AgentMode = 'pipeline' | 'realtime';
 
+/** Who is on the phone: decides the agent's language and what it may do. */
+export type CallRole = 'employee' | 'supervisor';
+
 /** Session bootstrap from GET /api/get_config (channel + tokens + agent identity). */
 export interface AgoraTokenData {
   token: string;

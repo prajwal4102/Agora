@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
+import dispatch
 import shop_db
 
 _endpoint = urlparse(os.getenv("MCP_ENDPOINT", ""))
@@ -41,6 +42,7 @@ mcp = FastMCP(
 )
 
 shop_db.init_db()
+dispatch.init()
 
 
 def shop_tool(title: str) -> Callable:
@@ -127,3 +129,26 @@ def schedule_callback(in_hours: float, note: str, product: Optional[str] = None)
     """Schedule a reminder call to the supervisor, for when they want to decide
     later. in_hours is how many hours from now."""
     return shop_db.schedule_callback(product, in_hours, note)
+
+
+# --- Employee side: refilling the shelf from the back room ---
+@shop_tool("Looked up refill tasks")
+def get_refill_tasks(product: Optional[str] = None) -> Dict[str, Any]:
+    """Open shelf-refill tasks for the floor employee: which product to bring
+    from the back room and how many."""
+    return dispatch.open_refill_tasks(product)
+
+
+@shop_tool("Recorded the shelf refill")
+def complete_refill_task(product: str, quantity: Optional[int] = None) -> Dict[str, Any]:
+    """Record that the employee refilled the shelf. quantity is how many they
+    brought; leave it empty if they brought what was asked."""
+    return dispatch.complete_refill(product, quantity)
+
+
+@shop_tool("Back room stock was missing")
+def report_backroom_shortage(product: str, found_quantity: int = 0) -> Dict[str, Any]:
+    """The employee could not find the expected stock in the back room.
+    found_quantity is how many they actually found (0 if none). If none are
+    left this alerts the supervisor about a reorder."""
+    return dispatch.report_shortage(product, found_quantity)

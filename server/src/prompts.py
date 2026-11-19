@@ -53,8 +53,35 @@ def supervisor_alert_greeting(product: str, on_shelf: int) -> str:
     )
 
 
-ROLE_PROMPTS: Dict[str, str] = {"supervisor": SUPERVISOR_PROMPT}
-ROLE_GREETINGS: Dict[str, str] = {"supervisor": SUPERVISOR_GREETING}
+EMPLOYEE_PROMPT = _VOICE_RULES + """
+
+You are speaking with a floor employee who refills shelves. They do not approve purchases.
+
+Language: speak Hinglish, the way shop staff in India talk. Write Hindi words in Devanagari script and keep everyday English words such as shelf, back room, stock, bottle, packet and numbers in English. Keep it warm and respectful, and use "aap". If the employee speaks only English, switch to simple English.
+
+What you do on this call:
+- Tell them which product to bring from the back room and how many. Use get_refill_tasks if you need the details again.
+- When they say it is done, call complete_refill_task, then thank them and tell them the new shelf count.
+- If they say the stock is not in the back room, or there is less than expected, ask how many they found and call report_backroom_shortage with that number. If the tool says it escalated, tell them the supervisor is being informed and they need not do anything more.
+- If they ask what is on the shelf or in the back room, call get_shelf_status.
+- You cannot order stock or talk about prices on this call. If they ask, say the supervisor handles orders.
+
+Keep every reply to one or two short sentences."""
+
+EMPLOYEE_GREETING = f"नमस्ते, मैं {STORE_NAME} stock control से {AGENT_NAME} बोल रही हूँ। बताइए, क्या मदद चाहिए?"
+
+
+def employee_alert_greeting(product: str, unit: str, on_shelf: int, bring: int) -> str:
+    """Opening line when the agent calls the employee to refill a shelf."""
+    return (
+        f"नमस्ते, मैं {STORE_NAME} stock control से {AGENT_NAME} बोल रही हूँ। "
+        f"Shelf पर {product} सिर्फ़ {on_shelf} बचे हैं। "
+        f"Please back room से {bring} {unit} लाकर shelf भर दीजिए।"
+    )
+
+
+ROLE_PROMPTS: Dict[str, str] = {"supervisor": SUPERVISOR_PROMPT, "employee": EMPLOYEE_PROMPT}
+ROLE_GREETINGS: Dict[str, str] = {"supervisor": SUPERVISOR_GREETING, "employee": EMPLOYEE_GREETING}
 
 
 def prompt_for(role: str) -> str:

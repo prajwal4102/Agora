@@ -82,13 +82,22 @@ class Agent:
         self.murf_locale = os.getenv("MURF_LOCALE", "en-IN")
         self.murf_base_url = os.getenv("MURF_BASE_URL", DEFAULT_MURF_BASE_URL)
         self.stt_language = os.getenv("STT_LANGUAGE", "en")
+        # The employee is spoken to in Hinglish: "multi" lets Deepgram follow
+        # Hindi-English switching, and the same Murf voice speaks hi-IN.
+        self.role_voice = {
+            "supervisor": {"stt": self.stt_language, "locale": self.murf_locale},
+            "employee": {
+                "stt": os.getenv("EMPLOYEE_STT_LANGUAGE", "multi"),
+                "locale": os.getenv("EMPLOYEE_MURF_LOCALE", "hi-IN"),
+            },
+        }
         if not self.murf_api_key:
             raise ValueError("MURF_API_KEY is required (Murf Falcon is the agent voice)")
 
         # Track active sessions by agent_id
         self._sessions: Dict[str, Any] = {}
 
-    def _build_tts(self) -> MurfTTS:
+    def _build_tts(self, locale: Optional[str] = None) -> MurfTTS:
         """Murf Falcon streaming TTS. An empty MURF_LOCALE lets Murf detect the
         language from the text, which is what mixed Hindi-English needs."""
         options: Dict[str, Any] = {
@@ -100,8 +109,9 @@ class Agent:
             "rate": 0,
             "pitch": 0,
         }
-        if self.murf_locale:
-            options["locale"] = self.murf_locale
+        locale = self.murf_locale if locale is None else locale
+        if locale:
+            options["locale"] = locale
         return MurfTTS(**options)
 
     async def start(
@@ -121,6 +131,7 @@ class Agent:
         about a specific low product."""
         instructions = prompt_for(role)
         opening = greeting_for(role, greeting)
+        voice = self.role_voice.get(role, self.role_voice["supervisor"])
         if not channel_name or not str(channel_name).strip():
             raise ValueError("channel_name is required and cannot be empty")
         if agent_uid <= 0:
@@ -185,8 +196,8 @@ class Agent:
                     self.openai_base_url or DEFAULT_OPENAI_BASE_URL
                 )
             llm = OpenAI(**llm_options)
-            stt = DeepgramSTT(model="nova-3", language=self.stt_language)
-            tts = self._build_tts()
+            stt = DeepgramSTT(model="nova-3", language=voice["stt"])
+            tts = self._build_tts(voice["locale"])
             agora_agent = (
                 agora_agent.with_stt(stt).with_llm(llm).with_tts(tts).with_tools()
             )
@@ -212,7 +223,8 @@ class Agent:
         )
 
         logger.info(
-            "Starting MCP agent channel=%s agent_uid=%s user_uid=%s mode=%s mcp_endpoint=%s",
+            "Starting MCP agent role=%s channel=%s agent_uid=%s user_uid=%s mode=%s mcp_endpoint=%s",
+            role,
             channel_name,
             agent_uid,
             user_uid,

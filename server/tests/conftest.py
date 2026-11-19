@@ -31,4 +31,7 @@ def shop(tmp_path, monkeypatch):
 
     monkeypatch.setattr(shop_db, "DB_PATH", str(tmp_path / "shop.db"))
     shop_db.init_db(reset=True)
+    import dispatch
+
+    dispatch.reset()
     return shop_db

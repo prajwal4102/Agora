@@ -1,4 +1,4 @@
-import type { AgentMode } from '../types/conversation'
+import type { AgentMode, CallRole } from '../types/conversation'
 
 const API_BASE_URL = '/api'
 
@@ -41,8 +41,9 @@ export async function startAgent(
   rtcUid: number,
   userUid: number,
   agentMode: AgentMode = 'pipeline',
+  call: { role?: CallRole; callId?: number } = {},
 ): Promise<string> {
-  const payload = { channelName, rtcUid, userUid, agentMode }
+  const payload = { channelName, rtcUid, userUid, agentMode, ...call }
 
   const response = await fetch(`${API_BASE_URL}/startAgent`, {
     method: 'POST',
@@ -76,3 +77,29 @@ export async function stopAgent(agentId: string): Promise<void> {
     throw new Error(error.detail || `HTTP ${response.status}`)
   }
 }
+
+/** A call the agent has placed to one of the phones. */
+export interface PendingCall {
+  call_id: number
+  role: CallRole
+  product: string | null
+  reason: string
+  greeting: string
+  status: string
+}
+
+/** The call ringing for this role right now, or null. */
+export async function getPendingCall(role: CallRole): Promise<PendingCall | null> {
+  const response = await fetch(`${API_BASE_URL}/calls/pending?role=${role}`, { cache: 'no-store' })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const result = await response.json()
+  return result.data ?? null
+}
+
+async function postCallAction(callId: number, action: 'decline' | 'end'): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/calls/${callId}/${action}`, { method: 'POST' })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+}
+
+export const declineCall = (callId: number) => postCallAction(callId, 'decline')
+export const endCall = (callId: number) => postCallAction(callId, 'end')

@@ -8,6 +8,9 @@ HTTP APIs:
 - POST /stopAgent      -> Stop agent
 - GET  /state          -> Shop snapshot for the dashboard
 - GET  /events         -> Agent event trail for the dashboard
+- GET  /calls/pending  -> Call ringing for a role
+- POST /calls/{id}/decline|end
+- POST /shelf          -> New shelf count; may trigger a call
 - POST /admin/reset    -> Reset demo data
 """
 import logging
@@ -33,6 +36,7 @@ logger = logging.getLogger("uvicorn.error")
 # --- MCP mount (single-process): serve the FastMCP server in this same uvicorn ---
 from contextlib import asynccontextmanager
 import mcp_server  # exposes `mcp = FastMCP(...)`
+import dispatch
 import shop_db
 
 # FastMCP serves the streamable-HTTP app at its default /mcp path; mounting the app
@@ -104,6 +108,15 @@ class StartAgentRequest(BaseModel):
     userUid: int
     parameters: Optional[Dict[str, Any]] = None
     agentMode: Literal["pipeline", "realtime"] = "pipeline"
+    role: Literal["supervisor", "employee"] = "supervisor"
+    callId: Optional[int] = None  # set when answering a call the agent placed
+
+
+class ShelfUpdateRequest(BaseModel):
+    """Request body for POST /shelf — a new shelf count from the camera or slider"""
+    product: str
+    quantity: int
+    source: str = "manual"
 
 
 class StopAgentRequest(BaseModel):
@@ -176,14 +189,27 @@ async def start_agent(request: StartAgentRequest):
         if request.parameters:
             output_audio_codec = request.parameters.get("output_audio_codec")
 
+        # Answering a call the agent placed: open with the reason it rang.
+        role, greeting = request.role, None
+        if request.callId is not None:
+            call = dispatch.get_call(request.callId)
+            if call is None:
+                raise ValueError("That call no longer exists")
+            role, greeting = call["role"], call["greeting"]
+            dispatch.set_call_status(request.callId, "answered")
+        else:
+            shop_db.log_event("call", f"The {role} called in")
+
         result = await agent.start(
             channel_name=request.channelName,
             agent_uid=request.rtcUid,
             user_uid=request.userUid,
             output_audio_codec=output_audio_codec,
             agent_mode=request.agentMode,
+            role=role,
+            greeting=greeting,
         )
-        return {"code": 0, "msg": "success", "data": result}
+        return {"code": 0, "msg": "success", "data": {**result, "role": role}}
     except Exception as e:
         _log_route_error(
             "/startAgent",
@@ -225,10 +251,36 @@ async def shop_events(after: int = Query(default=0, ge=0)):
     return {"code": 0, "data": shop_db.list_events(after_id=after)}
 
 
+# --- Calls the agent places: phones poll for theirs, then answer or decline ---
+@router.get("/calls/pending")
+async def pending_call(role: Literal["supervisor", "employee"] = Query(...)):
+    """The call ringing for this role right now, or null."""
+    return {"code": 0, "data": dispatch.pending_call(role)}
+
+
+@router.post("/calls/{call_id}/{action}")
+async def update_call(call_id: int, action: Literal["decline", "end"]):
+    status = {"decline": "declined", "end": "ended"}[action]
+    call = dispatch.set_call_status(call_id, status)
+    if call is None:
+        raise HTTPException(status_code=404, detail="No such call")
+    return {"code": 0, "data": call}
+
+
+@router.post("/shelf")
+async def update_shelf(request: ShelfUpdateRequest):
+    """A new shelf count. If the product is now low, the agent decides who to call."""
+    try:
+        return {"code": 0, "data": dispatch.update_shelf(request.product, request.quantity, request.source)}
+    except shop_db.ShopError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+
+
 @router.post("/admin/reset")
 async def reset_demo():
     """Put the shop back to its seed state before a demo run."""
     shop_db.init_db(reset=True)
+    dispatch.reset()
     shop_db.log_event("system", "Demo data reset")
     return {"code": 0, "msg": "reset"}
 
