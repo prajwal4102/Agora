@@ -115,7 +115,8 @@ class StartAgentRequest(BaseModel):
 class ShelfUpdateRequest(BaseModel):
     """Request body for POST /shelf — a new shelf count from the camera or slider"""
     product: str
-    quantity: int
+    quantity: Optional[int] = None  # an absolute count (camera)
+    delta: Optional[int] = None     # or a step from the current count (dashboard buttons)
     source: str = "manual"
 
 
@@ -242,7 +243,7 @@ async def stop_agent(request: StopAgentRequest):
 @router.get("/state")
 async def shop_state():
     """Shelf, back-room, budget and recent orders."""
-    return {"code": 0, "data": shop_db.snapshot()}
+    return {"code": 0, "data": dispatch.snapshot()}
 
 
 @router.get("/events")
@@ -271,7 +272,13 @@ async def update_call(call_id: int, action: Literal["decline", "end"]):
 async def update_shelf(request: ShelfUpdateRequest):
     """A new shelf count. If the product is now low, the agent decides who to call."""
     try:
-        return {"code": 0, "data": dispatch.update_shelf(request.product, request.quantity, request.source)}
+        if request.delta is not None:
+            data = dispatch.adjust_shelf(request.product, request.delta, request.source)
+        elif request.quantity is not None:
+            data = dispatch.update_shelf(request.product, request.quantity, request.source)
+        else:
+            raise HTTPException(status_code=400, detail="Send quantity or delta")
+        return {"code": 0, "data": data}
     except shop_db.ShopError as e:
         raise HTTPException(status_code=400, detail=e.message)
 

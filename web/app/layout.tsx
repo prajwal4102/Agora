@@ -15,9 +15,9 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-	title: "MCP Recipe | Agora Conversational AI",
+	title: "Asha · FreshMart stock agent",
 	description:
-		"Recipe: Agora orchestrates a tool on a separate MCP server (platform tool calling).",
+		"A voice agent that watches the shelf, calls the right person and reorders on approval.",
 	icons: {
 		icon: [
 			{ url: "/favicon.ico" },

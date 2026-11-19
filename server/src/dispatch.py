@@ -218,6 +218,15 @@ def update_shelf(product: str, quantity: int, source: str = "manual") -> Dict[st
     return {"ok": True, "product": prod["name"], "on_shelf": quantity, **action}
 
 
+def adjust_shelf(product: str, delta: int, source: str = "manual") -> Dict[str, Any]:
+    """Step a shelf count up or down from whatever it is now. Used by the
+    dashboard buttons so quick repeated presses cannot overwrite each other."""
+    with _connect() as conn:
+        prod = find_product(conn, product)
+    target = max(0, min(prod["shelf_capacity"], prod["shelf_qty"] + int(delta)))
+    return update_shelf(prod["name"], target, source)
+
+
 def triage(product: str) -> Dict[str, Any]:
     """Decide who to call about a low product. Does nothing if someone is
     already dealing with it."""
@@ -263,3 +272,34 @@ def triage(product: str) -> Dict[str, Any]:
         prompts.supervisor_alert_greeting(name, prod["shelf_qty"]),
     )
     return {"action": "call_supervisor", **call}
+
+
+# --------------------------------------------------------------------------- #
+# Dashboard snapshot
+# --------------------------------------------------------------------------- #
+def snapshot() -> Dict[str, Any]:
+    """Everything the dashboard shows: shelves, budget, orders, calls, tasks."""
+    data = shop_db.snapshot()
+    with _lock, _connect() as conn:
+        _expire_stale(conn)
+        calls = conn.execute(_CALL_SELECT + " ORDER BY c.id DESC LIMIT 6").fetchall()
+        proposals = conn.execute(
+            "SELECT o.id, o.quantity, o.total, p.name AS product, s.name AS supplier FROM orders o"
+            " JOIN products p ON p.id=o.product_id JOIN suppliers s ON s.id=o.supplier_id"
+            " WHERE o.status='proposed' ORDER BY o.id DESC"
+        ).fetchall()
+        on_order = {
+            r["name"] for r in conn.execute(
+                "SELECT DISTINCT p.name FROM orders o JOIN products p ON p.id=o.product_id"
+                " WHERE o.status='placed'"
+            )
+        }
+    tasks = open_refill_tasks()["tasks"]
+    refilling = {t["product"] for t in tasks}
+    for product in data["products"]:
+        product["refill_pending"] = product["product"] in refilling
+        product["on_order"] = product["product"] in on_order
+    data["calls"] = [_call_view(c) for c in calls]
+    data["refill_tasks"] = tasks
+    data["proposals"] = [dict(p) for p in proposals]
+    return data

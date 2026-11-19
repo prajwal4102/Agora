@@ -52,3 +52,11 @@ def test_no_second_call_once_the_product_is_on_order(shop, dispatch):
     proposal = shop.propose_order("cola can", "Sri Lakshmi Traders", 72)
     shop.confirm_order(proposal["proposal_id"], "yes")
     assert dispatch.update_shelf("cola can", 1)["action"] == "none"
+
+
+def test_stepping_the_shelf_applies_to_the_current_count(shop, dispatch):
+    for _ in range(5):
+        result = dispatch.adjust_shelf("cola can", -1)
+    assert result["on_shelf"] == 4  # 9 on the shelf, five removed
+    assert result["action"] == "call_supervisor"
+    assert dispatch.adjust_shelf("cola can", -99)["on_shelf"] == 0
