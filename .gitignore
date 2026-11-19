@@ -36,3 +36,6 @@ docs/superpowers/
 
 # old project kept locally for UI reference only
 _reference_sakarmi/
+
+# local demo database (rebuilt from seed data on first run)
+server/data/

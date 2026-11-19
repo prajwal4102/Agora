@@ -11,6 +11,7 @@ FAKE_ENV = {
     "AGORA_APP_ID": "test_app_id",
     "AGORA_APP_CERTIFICATE": "test_app_certificate",
     "MCP_ENDPOINT": "https://fake.example.com/mcp",
+    "MURF_API_KEY": "test_murf_key",
 }
 
 
@@ -21,3 +22,13 @@ def fake_env(monkeypatch):
     for key, value in FAKE_ENV.items():
         monkeypatch.setenv(key, value)
     yield FAKE_ENV
+
+
+@pytest.fixture
+def shop(tmp_path, monkeypatch):
+    """A freshly seeded shop database in a temp file."""
+    import shop_db
+
+    monkeypatch.setattr(shop_db, "DB_PATH", str(tmp_path / "shop.db"))
+    shop_db.init_db(reset=True)
+    return shop_db

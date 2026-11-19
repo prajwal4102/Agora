@@ -23,14 +23,10 @@ from agora_agent.agentkit.vendors import (
     OpenAIRealtime,
 )
 from mcp_config import build_mcp_servers
+from prompts import greeting_for, prompt_for
 
 logger = logging.getLogger("uvicorn.error")
 
-AGENT_GREETING = "Hi! Ask me what time it is."
-AGENT_INSTRUCTIONS = (
-    "You are a helpful voice assistant. When the user asks what time it is, "
-    "you MUST call the get_time tool, then say the time out loud. Do not guess."
-)
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_MURF_BASE_URL = "wss://global.api.murf.ai/v1/speech/stream-input"
 AgentMode = Literal["pipeline", "realtime"]
@@ -53,7 +49,6 @@ class Agent:
     def __init__(self):
         self.app_id = os.getenv("AGORA_APP_ID")
         self.app_certificate = os.getenv("AGORA_APP_CERTIFICATE")
-        self.greeting = os.getenv("AGENT_GREETING", AGENT_GREETING)
 
         # Pipeline is managed unless BYO credentials are supplied.
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
@@ -116,8 +111,16 @@ class Agent:
         user_uid: int,
         output_audio_codec: Optional[str] = None,
         agent_mode: AgentMode = "pipeline",
+        role: str = "supervisor",
+        greeting: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Start a Pipeline or Realtime agent with MCP tool calling."""
+        """Start a Pipeline or Realtime agent with MCP tool calling.
+
+        `role` picks who the agent is talking to (and so its instructions);
+        `greeting` overrides the opening line, e.g. for a call the agent places
+        about a specific low product."""
+        instructions = prompt_for(role)
+        opening = greeting_for(role, greeting)
         if not channel_name or not str(channel_name).strip():
             raise ValueError("channel_name is required and cannot be empty")
         if agent_uid <= 0:
@@ -142,7 +145,7 @@ class Agent:
 
         agent_options = {
             "client": self.client,
-            "greeting": self.greeting,
+            "greeting": opening,
             "failure_message": "Please wait a moment.",
             "max_history": 50,
             "advanced_features": {"enable_rtm": True},
@@ -172,9 +175,9 @@ class Agent:
         if agent_mode == "pipeline":
             llm_options = {
                 "model": self.openai_model,
-                "system_messages": [{"role": "system", "content": AGENT_INSTRUCTIONS}],
+                "system_messages": [{"role": "system", "content": instructions}],
                 "mcp_servers": mcp_servers,
-                "greeting_message": self.greeting,
+                "greeting_message": opening,
             }
             if self.openai_api_key:
                 llm_options["api_key"] = self.openai_api_key
@@ -191,8 +194,8 @@ class Agent:
             mllm = OpenAIRealtime(
                 api_key=self.openai_realtime_api_key,
                 model=self.openai_realtime_model,
-                instructions=AGENT_INSTRUCTIONS,
-                greeting_message=self.greeting,
+                instructions=instructions,
+                greeting_message=opening,
                 failure_message="Please wait a moment.",
                 turn_detection={"mode": "server_vad"},
                 mcp_servers=mcp_servers,

@@ -5,7 +5,7 @@ import mcp_config as cfg  # noqa: E402
 def test_build_mcp_servers():
     s = cfg.build_mcp_servers("https://x.ngrok-free.dev/mcp")
     assert len(s) == 1
-    assert s[0].name == "time"
+    assert s[0].name == "shop"
     assert s[0].endpoint == "https://x.ngrok-free.dev/mcp"
     assert s[0].transport is None
 

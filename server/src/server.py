@@ -6,6 +6,9 @@ HTTP APIs:
 - GET  /get_config     -> Generate connection config
 - POST /startAgent     -> Start agent with MCP tool calling
 - POST /stopAgent      -> Stop agent
+- GET  /state          -> Shop snapshot for the dashboard
+- GET  /events         -> Agent event trail for the dashboard
+- POST /admin/reset    -> Reset demo data
 """
 import logging
 import os
@@ -30,6 +33,7 @@ logger = logging.getLogger("uvicorn.error")
 # --- MCP mount (single-process): serve the FastMCP server in this same uvicorn ---
 from contextlib import asynccontextmanager
 import mcp_server  # exposes `mcp = FastMCP(...)`
+import shop_db
 
 # FastMCP serves the streamable-HTTP app at its default /mcp path; mounting the app
 # at root lands the public endpoint at exactly /mcp (no trailing-slash redirect).
@@ -206,6 +210,27 @@ async def stop_agent(request: StopAgentRequest):
     except Exception as e:
         _log_route_error("/stopAgent", e, agentId=request.agentId)
         raise _to_http_error(e)
+
+
+# --- Dashboard data: shop snapshot, the agent's event trail, demo reset ---
+@router.get("/state")
+async def shop_state():
+    """Shelf, back-room, budget and recent orders."""
+    return {"code": 0, "data": shop_db.snapshot()}
+
+
+@router.get("/events")
+async def shop_events(after: int = Query(default=0, ge=0)):
+    """Events newer than `after` (tool calls, triggers, calls placed)."""
+    return {"code": 0, "data": shop_db.list_events(after_id=after)}
+
+
+@router.post("/admin/reset")
+async def reset_demo():
+    """Put the shop back to its seed state before a demo run."""
+    shop_db.init_db(reset=True)
+    shop_db.log_event("system", "Demo data reset")
+    return {"code": 0, "msg": "reset"}
 
 
 app.include_router(router)

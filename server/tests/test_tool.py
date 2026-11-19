@@ -1,26 +1,92 @@
+"""Business rules behind the shop tools: matching, quoting, and the
+propose-then-confirm gate on ordering."""
 import asyncio
-import os, re, sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-import mcp_server as srv  # noqa: E402
+import json
 
-def test_current_time_message():
-    msg = srv.current_time_message()
-    assert "current server time" in msg.lower()
-    assert re.search(r"\d{2}:\d{2}:\d{2}", msg)
+import pytest
 
 
-def test_current_time_message_supports_12_hour_format():
-    msg = srv.current_time_message("12-hour")
+def test_spoken_product_names_match(shop):
+    assert shop.shelf_status("water bottles")["product"] == "water bottle"
+    assert shop.shelf_status("Coke")["product"] == "cola can"
+    assert shop.shelf_status("chocolates")["product"] == "chocolate bar"
+    with pytest.raises(shop.ShopError) as err:
+        shop.shelf_status("washing machine")
+    assert err.value.code == "UNKNOWN_PRODUCT"
 
-    assert "current server time" in msg.lower()
-    assert " AM." in msg or " PM." in msg
+
+def test_cheapest_supplier_is_out_of_cola(shop):
+    quotes = shop.supplier_quotes("cola can", 120)
+    by_name = {q["supplier"]: q for q in quotes["quotes"]}
+    assert by_name["Bharat Wholesale"]["can_fill_order"] is False
+    assert quotes["cheapest_that_can_fill"] == "Sri Lakshmi Traders"
+    assert quotes["fastest_that_can_fill"] == "QuickDrop Supply"
 
 
-def test_get_time_exposes_enum_parameter_schema():
-    tools = asyncio.run(srv.mcp.list_tools())
-    get_time = next(tool for tool in tools if tool.name == "get_time")
+def test_out_of_stock_supplier_cannot_be_proposed(shop):
+    with pytest.raises(shop.ShopError) as err:
+        shop.propose_order("cola can", "Bharat Wholesale", 120)
+    assert err.value.code == "SUPPLIER_OUT_OF_STOCK"
 
-    assert get_time.inputSchema["properties"]["time_format"]["enum"] == [
-        "12-hour",
-        "24-hour",
-    ]
+
+def test_over_budget_reports_what_fits(shop):
+    with pytest.raises(shop.ShopError) as err:
+        shop.propose_order("cola can", "Sri Lakshmi Traders", 240)
+    assert err.value.code == "OVER_BUDGET"
+    assert err.value.details["max_affordable_quantity"] == 206
+
+
+def test_order_needs_proposal_and_approval(shop):
+    with pytest.raises(shop.ShopError) as err:
+        shop.confirm_order(999, "yes go ahead")
+    assert err.value.code == "NO_SUCH_PROPOSAL"
+
+    proposal = shop.propose_order("cola can", "Sri Lakshmi Traders", 120)
+    assert proposal["total"] == 3480
+    with pytest.raises(shop.ShopError) as err:
+        shop.confirm_order(proposal["proposal_id"], "")
+    assert err.value.code == "APPROVAL_REQUIRED"
+    assert shop.order_status()["count"] == 0
+
+    placed = shop.confirm_order(proposal["proposal_id"], "yes, place it")
+    assert placed["status"] == "placed"
+    assert placed["budget_remaining"] == 2520
+    assert shop.order_status("cola")["orders"][0]["quantity"] == 120
+
+    with pytest.raises(shop.ShopError) as err:
+        shop.confirm_order(proposal["proposal_id"], "yes")
+    assert err.value.code == "ALREADY_PLACED"
+
+
+def test_changed_quantity_replaces_the_old_proposal(shop):
+    first = shop.propose_order("cola can", "Sri Lakshmi Traders", 120)
+    second = shop.propose_order("cola can", "Sri Lakshmi Traders", 72)
+    with pytest.raises(shop.ShopError) as err:
+        shop.confirm_order(first["proposal_id"], "yes")
+    assert err.value.code == "PROPOSAL_REPLACED"
+    assert shop.confirm_order(second["proposal_id"], "ok half is fine")["total"] == 2088
+
+
+def test_tools_return_errors_as_data_and_log_events(shop):
+    import mcp_server
+
+    names = {t.name for t in asyncio.run(mcp_server.mcp.list_tools())}
+    assert {"get_shelf_status", "get_supplier_quotes", "propose_order", "confirm_order"} <= names
+
+    result = json.loads(mcp_server.propose_order(product="cola can", supplier="Bharat Wholesale", quantity=120))
+    assert result == {
+        "ok": False,
+        "error": "SUPPLIER_OUT_OF_STOCK",
+        "message": "Bharat Wholesale is out of cola can. Check the other suppliers.",
+        "supplier": "Bharat Wholesale",
+    }
+    assert shop.list_events()[-1]["detail"]["tool"] == "propose_order"
+
+
+def test_tool_call_through_mcp_returns_json(shop):
+    import mcp_server
+
+    content, _ = asyncio.run(mcp_server.mcp.call_tool("get_sales_rate", {"product": "coke"}))
+    result = json.loads(content[0].text)
+    assert result["product"] == "cola can"
+    assert result["suggested_order_quantity"] == 120
