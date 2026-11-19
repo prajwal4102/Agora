@@ -12,6 +12,7 @@ catalogue items that are not on the table are never reported as empty.
 import logging
 import os
 import threading
+import time
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional
 
@@ -23,6 +24,7 @@ _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_PATH = os.getenv(
     "VISION_MODEL", os.path.join(_BASE_DIR, "data", "models", "yolov8s-worldv2.pt")
 )
+FRAMES_DIR = os.path.join(_BASE_DIR, "data", "frames")
 CONFIDENCE = float(os.getenv("VISION_CONFIDENCE", "0.3"))
 STABLE_FRAMES = int(os.getenv("VISION_STABLE_FRAMES", "3"))
 IMAGE_SIZE = int(os.getenv("VISION_IMAGE_SIZE", "640"))
@@ -76,6 +78,8 @@ class ShelfVision:
         self.counts = StableCounts()
         self.error: Optional[str] = None
         self.last_frame: Optional[bytes] = None  # most recent frame, for tuning
+        self._last_saved = 0.0
+        self._saved = -1
 
     def _load(self) -> None:
         """Load the detector and tell it which product names to look for."""
@@ -94,6 +98,21 @@ class ShelfVision:
         model.set_classes(prompts)
         self._model, self._class_product = model, class_product
         logger.info("Shelf vision ready: looking for %s", prompts)
+
+    def _keep_for_tuning(self, image_bytes: bytes) -> None:
+        """Save about one frame a second, the newest 90, so detection problems
+        can be looked at afterwards without anyone having to re-stage them."""
+        now = time.time()
+        if now - self._last_saved < 1.0:
+            return
+        self._last_saved = now
+        try:
+            os.makedirs(FRAMES_DIR, exist_ok=True)
+            self._saved = (self._saved + 1) % 90
+            with open(os.path.join(FRAMES_DIR, f"frame_{self._saved:02d}.jpg"), "wb") as handle:
+                handle.write(image_bytes)
+        except OSError:
+            pass
 
     def warm_up(self) -> None:
         """Load the detector ahead of the first frame (it takes a few seconds)."""
@@ -119,6 +138,7 @@ class ShelfVision:
         if frame is None:
             raise ValueError("That is not a readable image")
         self.last_frame = image_bytes
+        self._keep_for_tuning(image_bytes)
         with self._lock:
             if self._model is None:
                 self._load()
