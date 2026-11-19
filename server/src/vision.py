@@ -14,7 +14,7 @@ import os
 import threading
 import time
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import shop_db
 
@@ -22,12 +22,33 @@ logger = logging.getLogger("uvicorn.error")
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_PATH = os.getenv(
-    "VISION_MODEL", os.path.join(_BASE_DIR, "data", "models", "yolov8s-worldv2.pt")
+    "VISION_MODEL", os.path.join(_BASE_DIR, "data", "models", "yolov8x-worldv2.pt")
 )
 FRAMES_DIR = os.path.join(_BASE_DIR, "data", "frames")
+# How sure the detector must be, unless a product description sets its own floor.
 CONFIDENCE = float(os.getenv("VISION_CONFIDENCE", "0.3"))
+# Boxes overlapping more than this are treated as one object.
+OVERLAP = float(os.getenv("VISION_OVERLAP", "0.7"))
 STABLE_FRAMES = int(os.getenv("VISION_STABLE_FRAMES", "3"))
 IMAGE_SIZE = int(os.getenv("VISION_IMAGE_SIZE", "640"))
+
+
+def parse_detect_label(label: str) -> List[Tuple[str, float]]:
+    """Read the camera descriptions of a product: alternatives separated by "|",
+    each optionally followed by "@" and its own confidence floor.
+
+    "bottle|water bottle" gives both at the default floor.
+    "pen@0.1" gives pens a lower floor: thin objects score low even when found.
+    """
+    found: List[Tuple[str, float]] = []
+    for part in str(label or "").split("|"):
+        text, _, floor = part.partition("@")
+        if text.strip():
+            try:
+                found.append((text.strip(), float(floor) if floor.strip() else CONFIDENCE))
+            except ValueError:
+                found.append((text.strip(), CONFIDENCE))
+    return found
 
 
 class StableCounts:
@@ -74,6 +95,7 @@ class ShelfVision:
     def __init__(self) -> None:
         self._model: Any = None
         self._class_product: List[str] = []  # detector class index -> product name
+        self._class_floor: List[float] = []  # detector class index -> confidence floor
         self._lock = threading.Lock()
         self.counts = StableCounts()
         self.error: Optional[str] = None
@@ -88,15 +110,15 @@ class ShelfVision:
         os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
         prompts: List[str] = []
         class_product: List[str] = []
+        class_floor: List[float] = []
         for product in shop_db.catalogue():
-            # A product may list several descriptions, separated by "|".
-            for prompt in str(product["detect_label"]).split("|"):
-                if prompt.strip():
-                    prompts.append(prompt.strip())
-                    class_product.append(product["name"])
+            for prompt, floor in parse_detect_label(product["detect_label"]):
+                prompts.append(prompt)
+                class_product.append(product["name"])
+                class_floor.append(floor)
         model = YOLOWorld(MODEL_PATH)
         model.set_classes(prompts)
-        self._model, self._class_product = model, class_product
+        self._model, self._class_product, self._class_floor = model, class_product, class_floor
         logger.info("Shelf vision ready: looking for %s", prompts)
 
     def _keep_for_tuning(self, image_bytes: bytes) -> None:
@@ -142,14 +164,20 @@ class ShelfVision:
         with self._lock:
             if self._model is None:
                 self._load()
+            # Ask for everything above the lowest floor, then hold each
+            # detection to the floor of its own product.
             result = self._model.predict(
-                frame, conf=CONFIDENCE, imgsz=IMAGE_SIZE, agnostic_nms=True, verbose=False
+                frame, conf=min(self._class_floor), iou=OVERLAP, imgsz=IMAGE_SIZE,
+                agnostic_nms=True, verbose=False,
             )[0]
             height, width = frame.shape[:2]
             boxes: List[Dict[str, Any]] = []
             frame_counts = {name: 0 for name in dict.fromkeys(self._class_product)}
             for box in result.boxes:
-                product = self._class_product[int(box.cls[0])]
+                index = int(box.cls[0])
+                if float(box.conf[0]) < self._class_floor[index]:
+                    continue
+                product = self._class_product[index]
                 x1, y1, x2, y2 = (float(v) for v in box.xyxy[0])
                 boxes.append({
                     "product": product,

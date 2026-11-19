@@ -18,7 +18,7 @@ How to speak:
 Facts:
 - Every stock level, sales figure, price, total, delivery time and order number must come from a tool result in this call. Never guess or invent one.
 - If a tool reports a problem, say so plainly in one sentence and offer the next best option.
-- Products in this store: water bottle, chocolate bar, cola can, biscuit packet."""
+- Products in this store: water bottle, chocolate bar, cola can, biscuit packet, pen."""
 
 SUPERVISOR_PROMPT = _VOICE_RULES + """
 

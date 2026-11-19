@@ -115,6 +115,7 @@ SEED_PRODUCTS = [
     ("chocolate bar", "chocolate,dairy milk,choco", "chocolate bar|candy bar", "bar", 24, 8, 10, 3, 0, 36),
     ("cola can", "cola,coke,soft drink,cold drink,can", "soda can|tin can", "can", 24, 9, 12, 4, 0, 40),
     ("biscuit packet", "biscuit,biscuits,parle,cookies", "biscuit packet|snack packet", "packet", 20, 10, 12, 4, 40, 50),
+    ("pen", "pens,ball pen,ballpen,ballpoint,kalam", "pen@0.1|ballpoint pen@0.1", "pen", 10, 5, 6, 2, 30, 25),
 ]
 
 # name, lead_time_hours
@@ -140,6 +141,9 @@ SEED_PRICES = [
     ("Bharat Wholesale", "biscuit packet", 8.0, 500),
     ("Sri Lakshmi Traders", "biscuit packet", 8.5, 500),
     ("QuickDrop Supply", "biscuit packet", 9.5, 200),
+    ("Bharat Wholesale", "pen", 4.0, 1000),
+    ("Sri Lakshmi Traders", "pen", 4.5, 500),
+    ("QuickDrop Supply", "pen", 6.0, 200),
 ]
 
 SEED_BUDGET = 6000.0
@@ -150,6 +154,17 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _seed_prices(conn: sqlite3.Connection) -> None:
+    """Add any supplier price that is not there yet."""
+    for supplier, product, price, qty in SEED_PRICES:
+        conn.execute(
+            "INSERT OR IGNORE INTO supplier_prices (supplier_id, product_id, unit_price, available_qty)"
+            " VALUES ((SELECT id FROM suppliers WHERE name=?),"
+            " (SELECT id FROM products WHERE name=?), ?, ?)",
+            (supplier, product, price, qty),
+        )
 
 
 def init_db(reset: bool = False) -> None:
@@ -163,11 +178,19 @@ def init_db(reset: bool = False) -> None:
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.executescript(SCHEMA)
         if conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]:
-            # Keep the camera's product descriptions current in an existing database.
+            # An existing database: add any product the seed list has gained and
+            # keep the camera descriptions current. Stock levels are left alone.
+            conn.executemany(
+                "INSERT OR IGNORE INTO products (name, aliases, detect_label, unit, pack_size, shelf_qty,"
+                " shelf_capacity, shelf_threshold, backroom_qty, daily_sales)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                SEED_PRODUCTS,
+            )
             conn.executemany(
                 "UPDATE products SET detect_label=? WHERE name=?",
                 [(row[2], row[0]) for row in SEED_PRODUCTS],
             )
+            _seed_prices(conn)
             return
         conn.executemany(
             "INSERT INTO products (name, aliases, detect_label, unit, pack_size, shelf_qty,"
@@ -178,13 +201,7 @@ def init_db(reset: bool = False) -> None:
         conn.executemany(
             "INSERT INTO suppliers (name, lead_time_hours) VALUES (?,?)", SEED_SUPPLIERS
         )
-        for supplier, product, price, qty in SEED_PRICES:
-            conn.execute(
-                "INSERT INTO supplier_prices (supplier_id, product_id, unit_price, available_qty)"
-                " VALUES ((SELECT id FROM suppliers WHERE name=?),"
-                " (SELECT id FROM products WHERE name=?), ?, ?)",
-                (supplier, product, price, qty),
-            )
+        _seed_prices(conn)
         conn.execute(
             "INSERT INTO settings (key, value) VALUES ('budget_remaining', ?)",
             (str(SEED_BUDGET),),

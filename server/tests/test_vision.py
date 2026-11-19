@@ -64,3 +64,25 @@ def test_a_manual_count_change_confirms_nothing(shop, dispatch):
     dispatch.update_shelf("water bottle", 3)
     dispatch.update_shelf("water bottle", 11)
     assert dispatch.open_refill_tasks()["count"] == 1
+
+
+def test_camera_descriptions_can_set_their_own_confidence_floor():
+    from vision import CONFIDENCE, parse_detect_label
+
+    assert parse_detect_label("bottle|water bottle") == [("bottle", CONFIDENCE), ("water bottle", CONFIDENCE)]
+    assert parse_detect_label("pen@0.1|ballpoint pen@0.1") == [("pen", 0.1), ("ballpoint pen", 0.1)]
+    assert parse_detect_label(" | ") == []
+    assert parse_detect_label("cup@oops") == [("cup", CONFIDENCE)]
+
+
+def test_new_seed_products_reach_an_existing_database(shop):
+    import sqlite3
+
+    with sqlite3.connect(shop.DB_PATH) as conn:
+        conn.execute("DELETE FROM supplier_prices WHERE product_id=(SELECT id FROM products WHERE name='pen')")
+        conn.execute("DELETE FROM products WHERE name='pen'")
+        conn.execute("UPDATE products SET shelf_qty=1 WHERE name='water bottle'")
+    shop.init_db()
+    assert shop.shelf_status("pens")["product"] == "pen"
+    assert shop.supplier_quotes("pen", 50)["cheapest_that_can_fill"] == "Bharat Wholesale"
+    assert shop.shelf_status("water bottle")["on_shelf"] == 1  # existing stock untouched
