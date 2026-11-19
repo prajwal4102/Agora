@@ -36,8 +36,11 @@ logger = logging.getLogger("uvicorn.error")
 # --- MCP mount (single-process): serve the FastMCP server in this same uvicorn ---
 from contextlib import asynccontextmanager
 import mcp_server  # exposes `mcp = FastMCP(...)`
+import asyncio
+
 import dispatch
 import shop_db
+import telephony
 
 # FastMCP serves the streamable-HTTP app at its default /mcp path; mounting the app
 # at root lands the public endpoint at exactly /mcp (no trailing-slash redirect).
@@ -48,8 +51,44 @@ _mcp_asgi = mcp_server.mcp.streamable_http_app()
 async def _lifespan(_app):
     # Starlette mount() does not auto-run a sub-app lifespan, so run the FastMCP
     # session manager here for the life of the server process.
+    global _loop
+    _loop = asyncio.get_running_loop()
+    dispatch.on_call_placed = _on_call_placed
     async with mcp_server.mcp.session_manager.run():
         yield
+
+
+_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+async def _dial_real_phone(call: Dict[str, Any], to_number: str) -> None:
+    """Dial the mobile for a queued call and mirror its progress into the queue."""
+    call_id = call["call_id"]
+    try:
+        placed = await telephony.dial(agent, call["role"], call["greeting"], to_number)
+    except Exception as exc:
+        logger.exception("Phone call failed call_id=%s", call_id)
+        shop_db.log_event(
+            "call", "Phone call could not be placed. Ringing the web phone instead.",
+            {"call_id": call_id, "error": str(exc)[:300]},
+        )
+        return  # the call stays 'ringing', so the web phone page still rings
+    shop_db.log_event("call", f"Dialling the {call['role']}'s mobile", {"call_id": call_id})
+
+    def on_state(state: str, reason: Any) -> None:
+        dispatch.set_call_status(call_id, "answered" if state == "answered" else "ended")
+
+    if placed.get("agent_id"):
+        await telephony.follow_call(agent, placed["agent_id"], placed["request_options"], on_state)
+
+
+def _on_call_placed(call: Dict[str, Any]) -> None:
+    """A call was queued. If real phone calls are on, dial the mobile too. Tools
+    can run off the event loop, so hand the work over thread-safely."""
+    to_number = telephony.number_for(call["role"])
+    if not to_number or agent is None or _loop is None:
+        return
+    _loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_dial_real_phone(call, to_number)))
 
 
 def _log_route_error(route: str, exc: Exception, **context) -> None:
@@ -281,6 +320,54 @@ async def update_shelf(request: ShelfUpdateRequest):
         return {"code": 0, "data": data}
     except shop_db.ShopError as e:
         raise HTTPException(status_code=400, detail=e.message)
+
+
+@router.get("/phone/status")
+async def phone_status():
+    """Whether real phone calls are switched on and fully configured."""
+    cfg = telephony.settings()
+    return {"code": 0, "data": {
+        "mode": cfg["mode"],
+        "missing": telephony.missing_settings(),
+        "active": cfg["mode"] == "phone" and not telephony.missing_settings(),
+    }}
+
+
+@router.post("/phone/test")
+async def phone_test(role: Literal["supervisor", "employee"] = Query(default="supervisor")):
+    """Place one real test call to this role's mobile, whatever CALL_MODE is."""
+    if agent is None:
+        raise HTTPException(status_code=500, detail="Service not properly configured.")
+    missing = telephony.missing_settings()
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Fill in {', '.join(missing)} in server/.env.local")
+    to_number = telephony.settings()[role]
+    try:
+        placed = await telephony.dial(
+            agent, role,
+            "Hello, this is Asha from FreshMart stock control, calling to test the phone line. Can you hear me?"
+            if role == "supervisor" else
+            "नमस्ते, मैं FreshMart stock control से Asha बोल रही हूँ। यह एक test call है। क्या आप मुझे सुन पा रहे हैं?",
+            to_number,
+        )
+    except Exception as exc:
+        _log_route_error("/phone/test", exc, role=role)
+        raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {str(exc)[:500]}")
+    return {"code": 0, "data": {"agent_id": placed.get("agent_id"), "channel": placed.get("channel")}}
+
+
+@router.get("/phone/call/{agent_id}")
+async def phone_call_status(agent_id: str):
+    """Agora's view of a placed phone call: ringing, answered, hung up, and why."""
+    try:
+        info = await telephony.call_info(agent, agent_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {str(exc)[:500]}")
+    data = info.model_dump() if hasattr(info, "model_dump") else dict(info)
+    for key in ("to_number", "from_number"):
+        if data.get(key):
+            data[key] = "…" + str(data[key])[-4:]
+    return {"code": 0, "data": data}
 
 
 @router.post("/admin/reset")

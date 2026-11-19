@@ -14,6 +14,10 @@ import shop_db
 from shop_db import ShopError, _connect, _lock, find_product, log_event
 
 RING_TIMEOUT_SECONDS = 45
+
+# Set by the server: called with each newly placed call so it can dial a real
+# phone when that is switched on. Left as None, calls only ring the web page.
+on_call_placed = None
 ROLES = ("employee", "supervisor")
 
 SCHEMA = """
@@ -75,7 +79,10 @@ def place_call(role: str, product: Optional[str], reason: str, greeting: str) ->
         )
         call_id = cur.lastrowid
     log_event("call", f"Calling the {role}", {"call_id": call_id, "product": product, "reason": reason})
-    return {"call_id": call_id, "role": role, "product": product, "reason": reason}
+    call = {"call_id": call_id, "role": role, "product": product, "reason": reason}
+    if on_call_placed is not None:
+        on_call_placed({**call, "greeting": greeting})
+    return call
 
 
 def _expire_stale(conn: Any) -> None:

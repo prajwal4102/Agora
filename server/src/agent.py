@@ -114,6 +114,49 @@ class Agent:
             options["locale"] = locale
         return MurfTTS(**options)
 
+    def build_pipeline_agent(self, role: str, greeting: Optional[str] = None, for_phone: bool = False):
+        """An agent (STT -> LLM with shop tools -> Murf) briefed for one role.
+        `for_phone` drops the web-only extras: a phone has no data channel for
+        transcripts, and phone audio is not the low-latency web profile."""
+        opening = greeting_for(role, greeting)
+        voice = self.role_voice.get(role, self.role_voice["supervisor"])
+        parameters: Dict[str, Any] = {"enable_error_message": True, "enable_metrics": True}
+        if not for_phone:
+            parameters.update({"audio_scenario": "chorus", "data_channel": "rtm"})
+        llm_options: Dict[str, Any] = {
+            "model": self.openai_model,
+            "system_messages": [{"role": "system", "content": prompt_for(role)}],
+            "mcp_servers": build_mcp_servers(self.mcp_endpoint),
+            "greeting_message": opening,
+        }
+        if self.openai_api_key:
+            llm_options["api_key"] = self.openai_api_key
+            llm_options["base_url"] = self.openai_base_url or DEFAULT_OPENAI_BASE_URL
+        return (
+            AgoraAgent(
+                client=self.client,
+                greeting=opening,
+                failure_message="Please wait a moment.",
+                max_history=50,
+                advanced_features={"enable_rtm": not for_phone},
+                parameters=parameters,
+                turn_detection={
+                    "config": {
+                        "speech_threshold": 0.5,
+                        "start_of_speech": {
+                            "mode": "vad",
+                            "vad_config": {"interrupt_duration_ms": 160, "prefix_padding_ms": 300},
+                        },
+                        "end_of_speech": {"mode": "vad", "vad_config": {"silence_duration_ms": 480}},
+                    },
+                },
+            )
+            .with_stt(DeepgramSTT(model="nova-3", language=voice["stt"]))
+            .with_llm(OpenAI(**llm_options))
+            .with_tts(self._build_tts(voice["locale"]))
+            .with_tools()
+        )
+
     async def start(
         self,
         channel_name: str,
