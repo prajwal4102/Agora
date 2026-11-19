@@ -23,7 +23,7 @@ _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_PATH = os.getenv(
     "VISION_MODEL", os.path.join(_BASE_DIR, "data", "models", "yolov8s-worldv2.pt")
 )
-CONFIDENCE = float(os.getenv("VISION_CONFIDENCE", "0.15"))
+CONFIDENCE = float(os.getenv("VISION_CONFIDENCE", "0.3"))
 STABLE_FRAMES = int(os.getenv("VISION_STABLE_FRAMES", "3"))
 IMAGE_SIZE = int(os.getenv("VISION_IMAGE_SIZE", "640"))
 
@@ -75,6 +75,7 @@ class ShelfVision:
         self._lock = threading.Lock()
         self.counts = StableCounts()
         self.error: Optional[str] = None
+        self.last_frame: Optional[bytes] = None  # most recent frame, for tuning
 
     def _load(self) -> None:
         """Load the detector and tell it which product names to look for."""
@@ -117,6 +118,7 @@ class ShelfVision:
         frame = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             raise ValueError("That is not a readable image")
+        self.last_frame = image_bytes
         with self._lock:
             if self._model is None:
                 self._load()

@@ -25,7 +25,7 @@ _base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(_base_dir, '.env.local'), override=True)
 load_dotenv(os.path.join(_base_dir, '.env'), override=True)
 
-from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -345,6 +345,14 @@ async def vision_frame(request: Request):
     for product, count in seen["changed"].items():
         actions[product] = dispatch.update_shelf(product, count, source="camera").get("action")
     return {"code": 0, "data": {**seen, "actions": actions}}
+
+
+@router.get("/vision/last-frame")
+async def vision_last_frame():
+    """The most recent frame the camera sent, for checking what the detector sees."""
+    if shelf_vision.last_frame is None:
+        raise HTTPException(status_code=404, detail="No frame received yet. Start the camera.")
+    return Response(content=shelf_vision.last_frame, media_type="image/jpeg")
 
 
 @router.post("/vision/reset")

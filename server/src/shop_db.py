@@ -106,12 +106,15 @@ CREATE TABLE IF NOT EXISTS events (
 );
 """
 
+# detect_label is what the shelf camera looks for: plain descriptions of the
+# shape, several per product separated by "|". "bottle" finds bottles of any
+# colour; "water bottle" alone misses ones that are not clear plastic.
 # name, aliases, detect_label, unit, pack, shelf, capacity, threshold, backroom, daily_sales
 SEED_PRODUCTS = [
-    ("water bottle", "water,bisleri,pani,paani,bottle", "water bottle", "bottle", 12, 10, 12, 4, 24, 60),
-    ("chocolate bar", "chocolate,dairy milk,choco", "chocolate bar", "bar", 24, 8, 10, 3, 0, 36),
-    ("cola can", "cola,coke,soft drink,cold drink,can", "soda can", "can", 24, 9, 12, 4, 0, 40),
-    ("biscuit packet", "biscuit,biscuits,parle,cookies", "biscuit packet", "packet", 20, 10, 12, 4, 40, 50),
+    ("water bottle", "water,bisleri,pani,paani,bottle", "bottle|water bottle", "bottle", 12, 10, 12, 4, 24, 60),
+    ("chocolate bar", "chocolate,dairy milk,choco", "chocolate bar|candy bar", "bar", 24, 8, 10, 3, 0, 36),
+    ("cola can", "cola,coke,soft drink,cold drink,can", "soda can|tin can", "can", 24, 9, 12, 4, 0, 40),
+    ("biscuit packet", "biscuit,biscuits,parle,cookies", "biscuit packet|snack packet", "packet", 20, 10, 12, 4, 40, 50),
 ]
 
 # name, lead_time_hours
@@ -160,6 +163,11 @@ def init_db(reset: bool = False) -> None:
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.executescript(SCHEMA)
         if conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]:
+            # Keep the camera's product descriptions current in an existing database.
+            conn.executemany(
+                "UPDATE products SET detect_label=? WHERE name=?",
+                [(row[2], row[0]) for row in SEED_PRODUCTS],
+            )
             return
         conn.executemany(
             "INSERT INTO products (name, aliases, detect_label, unit, pack_size, shelf_qty,"
