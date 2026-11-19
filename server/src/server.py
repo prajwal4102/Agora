@@ -25,7 +25,8 @@ _base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(_base_dir, '.env.local'), override=True)
 load_dotenv(os.path.join(_base_dir, '.env'), override=True)
 
-from fastapi import APIRouter, FastAPI, HTTPException, Query
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from agora_agent.agentkit.token import generate_convo_ai_token
@@ -37,10 +38,12 @@ logger = logging.getLogger("uvicorn.error")
 from contextlib import asynccontextmanager
 import mcp_server  # exposes `mcp = FastMCP(...)`
 import asyncio
+import threading
 
 import dispatch
 import shop_db
 import telephony
+from vision import shelf_vision
 
 # FastMCP serves the streamable-HTTP app at its default /mcp path; mounting the app
 # at root lands the public endpoint at exactly /mcp (no trailing-slash redirect).
@@ -54,6 +57,8 @@ async def _lifespan(_app):
     global _loop
     _loop = asyncio.get_running_loop()
     dispatch.on_call_placed = _on_call_placed
+    # Load the shelf detector in the background so the first camera frame is fast.
+    threading.Thread(target=shelf_vision.warm_up, daemon=True).start()
     async with mcp_server.mcp.session_manager.run():
         yield
 
@@ -322,6 +327,33 @@ async def update_shelf(request: ShelfUpdateRequest):
         raise HTTPException(status_code=400, detail=e.message)
 
 
+@router.post("/vision/frame")
+async def vision_frame(request: Request):
+    """One webcam frame (JPEG bytes). Returns what the camera sees, and feeds
+    any count that has held steady into the shelf."""
+    image = await request.body()
+    if not image:
+        raise HTTPException(status_code=400, detail="Send a JPEG image as the request body")
+    try:
+        seen = await run_in_threadpool(shelf_vision.detect, image)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        _log_route_error("/vision/frame", exc)
+        raise HTTPException(status_code=500, detail=f"Detector failed: {type(exc).__name__}: {str(exc)[:300]}")
+    actions = {}
+    for product, count in seen["changed"].items():
+        actions[product] = dispatch.update_shelf(product, count, source="camera").get("action")
+    return {"code": 0, "data": {**seen, "actions": actions}}
+
+
+@router.post("/vision/reset")
+async def vision_reset():
+    """Forget what the camera has seen (call when the shelf is rearranged)."""
+    shelf_vision.reset()
+    return {"code": 0, "msg": "reset"}
+
+
 @router.get("/phone/status")
 async def phone_status():
     """Whether real phone calls are switched on and fully configured."""
@@ -375,6 +407,7 @@ async def reset_demo():
     """Put the shop back to its seed state before a demo run."""
     shop_db.init_db(reset=True)
     dispatch.reset()
+    shelf_vision.reset()
     shop_db.log_event("system", "Demo data reset")
     return {"code": 0, "msg": "reset"}
 

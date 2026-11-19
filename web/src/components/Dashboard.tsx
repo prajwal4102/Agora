@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { CameraPanel } from "@/components/CameraPanel";
 import {
 	type ShelfProduct,
 	type ShopCall,
@@ -115,6 +116,7 @@ export default function Dashboard() {
 			<div className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,0.8fr)]">
 				<section className="flex min-h-0 flex-col gap-3 overflow-y-auto">
 					<SectionTitle icon={<ScanLine className="h-4 w-4" aria-hidden />}>Shelf</SectionTitle>
+					<CameraPanel />
 					{state?.products.map((product) => (
 						<ShelfCard key={product.product} product={product} onChange={changeShelf} />
 					))}

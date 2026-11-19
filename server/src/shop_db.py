@@ -261,6 +261,13 @@ def find_supplier(conn: sqlite3.Connection, query: str) -> sqlite3.Row:
     )
 
 
+def catalogue() -> List[Dict[str, Any]]:
+    """Every product with the text the shelf camera looks for."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT name, unit, detect_label FROM products ORDER BY id").fetchall()
+    return [dict(row) for row in rows]
+
+
 def _budget(conn: sqlite3.Connection) -> float:
     row = conn.execute("SELECT value FROM settings WHERE key='budget_remaining'").fetchone()
     return float(row["value"]) if row else 0.0

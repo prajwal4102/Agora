@@ -76,3 +76,28 @@ export const stepShelfCount = (product: string, delta: number) =>
   })
 
 export const resetDemo = () => request<void>('/admin/reset', { method: 'POST' })
+
+/** What the shelf camera saw in one frame. */
+export interface VisionResult {
+  boxes: { product: string; confidence: number; box: [number, number, number, number] }[]
+  /** Count per product in this frame alone. */
+  frame_counts: Record<string, number>
+  /** Counts that have held steady long enough to be believed. */
+  stable_counts: Record<string, number>
+  /** Products the camera has actually seen on this shelf. */
+  tracked: string[]
+  changed: Record<string, number>
+  actions: Record<string, string>
+}
+
+/** Send one webcam frame to the detector. */
+export async function sendVisionFrame(frame: Blob): Promise<VisionResult> {
+  return request<VisionResult>('/vision/frame', {
+    method: 'POST',
+    headers: { 'Content-Type': 'image/jpeg' },
+    body: frame,
+  })
+}
+
+/** Forget what the camera has seen, e.g. after rearranging the shelf. */
+export const resetVision = () => request<void>('/vision/reset', { method: 'POST' })

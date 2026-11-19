@@ -221,8 +221,45 @@ def update_shelf(product: str, quantity: int, source: str = "manual") -> Dict[st
     if changed:
         log_event("shelf", f"Shelf count: {quantity} {prod['name']}",
                   {"product": prod["name"], "count": quantity, "was": prod["shelf_qty"], "source": source})
+    if source == "camera" and quantity > prod["shelf_qty"]:
+        _camera_saw_restock(prod, quantity)
     action = triage(prod["name"]) if quantity <= prod["shelf_threshold"] else {"action": "none"}
     return {"ok": True, "product": prod["name"], "on_shelf": quantity, **action}
+
+
+def _camera_saw_restock(prod: Any, quantity: int) -> None:
+    """The camera saw more of a product than before. If someone was asked to
+    refill it, or an order was on its way, that is now confirmed by sight
+    rather than by anyone's word."""
+    if quantity <= prod["shelf_threshold"]:
+        return
+    added = quantity - prod["shelf_qty"]
+    with _lock, _connect() as conn:
+        task = conn.execute(
+            "SELECT id FROM refill_tasks WHERE product_id=? AND status='open' ORDER BY id DESC LIMIT 1",
+            (prod["id"],),
+        ).fetchone()
+        order = None
+        if task:
+            conn.execute(
+                "UPDATE refill_tasks SET status='done', done_at=? WHERE id=?", (time.time(), task["id"])
+            )
+            conn.execute(
+                "UPDATE products SET backroom_qty=MAX(0, backroom_qty-?) WHERE id=?", (added, prod["id"])
+            )
+        else:
+            order = conn.execute(
+                "SELECT id FROM orders WHERE product_id=? AND status='placed' ORDER BY id LIMIT 1",
+                (prod["id"],),
+            ).fetchone()
+            if order:
+                conn.execute("UPDATE orders SET status='delivered' WHERE id=?", (order["id"],))
+    if task:
+        log_event("decision", f"Camera confirms the {prod['name']} shelf was refilled",
+                  {"product": prod["name"], "on_shelf": quantity, "added": added})
+    elif order:
+        log_event("decision", f"Camera confirms order #{order['id']} arrived: {prod['name']} is back on the shelf",
+                  {"product": prod["name"], "on_shelf": quantity, "order_number": order["id"]})
 
 
 def adjust_shelf(product: str, delta: int, source: str = "manual") -> Dict[str, Any]:
