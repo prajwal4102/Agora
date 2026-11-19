@@ -18,7 +18,7 @@ from agora_agent import Area, AsyncAgora
 from agora_agent.agentkit import Agent as AgoraAgent
 from agora_agent.agentkit.vendors import (
     DeepgramSTT,
-    MiniMaxTTS,
+    MurfTTS,
     OpenAI,
     OpenAIRealtime,
 )
@@ -32,6 +32,7 @@ AGENT_INSTRUCTIONS = (
     "you MUST call the get_time tool, then say the time out loud. Do not guess."
 )
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1/chat/completions"
+DEFAULT_MURF_BASE_URL = "wss://global.api.murf.ai/v1/speech/stream-input"
 AgentMode = Literal["pipeline", "realtime"]
 
 
@@ -79,8 +80,34 @@ class Agent:
             app_certificate=self.app_certificate,
         )
 
+        # Voice: Murf Falcon is the agent's voice. STT language "multi" lets
+        # Deepgram follow Hindi-English code switching; "en" is English only.
+        self.murf_api_key = os.getenv("MURF_API_KEY")
+        self.murf_voice_id = os.getenv("MURF_VOICE_ID", "Anisha")
+        self.murf_locale = os.getenv("MURF_LOCALE", "en-IN")
+        self.murf_base_url = os.getenv("MURF_BASE_URL", DEFAULT_MURF_BASE_URL)
+        self.stt_language = os.getenv("STT_LANGUAGE", "en")
+        if not self.murf_api_key:
+            raise ValueError("MURF_API_KEY is required (Murf Falcon is the agent voice)")
+
         # Track active sessions by agent_id
         self._sessions: Dict[str, Any] = {}
+
+    def _build_tts(self) -> MurfTTS:
+        """Murf Falcon streaming TTS. An empty MURF_LOCALE lets Murf detect the
+        language from the text, which is what mixed Hindi-English needs."""
+        options: Dict[str, Any] = {
+            "key": self.murf_api_key,
+            "base_url": self.murf_base_url,
+            "voice_id": self.murf_voice_id,
+            "model": "FALCON",
+            "sample_rate": 24000,
+            "rate": 0,
+            "pitch": 0,
+        }
+        if self.murf_locale:
+            options["locale"] = self.murf_locale
+        return MurfTTS(**options)
 
     async def start(
         self,
@@ -155,11 +182,8 @@ class Agent:
                     self.openai_base_url or DEFAULT_OPENAI_BASE_URL
                 )
             llm = OpenAI(**llm_options)
-            stt = DeepgramSTT(model="nova-3", language="en")
-            tts = MiniMaxTTS(
-                model="speech_2_6_turbo",
-                voice_id="English_captivating_female1",
-            )
+            stt = DeepgramSTT(model="nova-3", language=self.stt_language)
+            tts = self._build_tts()
             agora_agent = (
                 agora_agent.with_stt(stt).with_llm(llm).with_tts(tts).with_tools()
             )
