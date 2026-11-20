@@ -1,0 +1,5 @@
+Procurement Agent greeting:
+Hello, this is Asha from FreshMart stock control. How can I help?
+
+Floor Agent greeting:
+नमस्ते, मैं FreshMart stock control से Asha बोल रही हूँ। बताइए, क्या मदद चाहिए?

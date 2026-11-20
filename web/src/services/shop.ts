@@ -39,6 +39,8 @@ export interface AgoraSession {
   role: 'employee' | 'supervisor'
   voice_agent: string
   started_at: number
+  /** "studio" when the call was started from an agent saved in Agent Studio. */
+  source?: 'studio' | 'code'
   stt: string
   llm: string
   tts: string

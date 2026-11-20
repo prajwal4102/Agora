@@ -94,8 +94,68 @@ class Agent:
         if not self.murf_api_key:
             raise ValueError("MURF_API_KEY is required (Murf Falcon is the agent voice)")
 
+        # Agents saved in Agora Agent Studio, by role. When one is set, calls for
+        # that role start from the Studio agent (its instructions, voice and
+        # tools live in Agora's console) and only the opening line is sent from
+        # here. Left empty, the agent is built from this file as before.
+        self.studio_agents = {
+            "supervisor": (os.getenv("STUDIO_PROCUREMENT_AGENT_ID") or "").strip() or None,
+            "employee": (os.getenv("STUDIO_FLOOR_AGENT_ID") or "").strip() or None,
+        }
+        self._studio_auth: Dict[str, Any] = {}
+
         # Track active sessions by agent_id
         self._sessions: Dict[str, Any] = {}
+
+    async def _start_from_studio(
+        self, pipeline_id: str, channel_name: str, agent_uid: int, user_uid: int, role: str, opening: str
+    ) -> Dict[str, Any]:
+        """Start a call from an agent saved in Agent Studio. Agora uses the saved
+        agent as the base and applies what is sent here on top, so the only
+        thing sent is what changes per call: the opening line."""
+        from agora_agent.agentkit.token import generate_convo_ai_token
+
+        token = generate_convo_ai_token(
+            app_id=self.app_id,
+            app_certificate=self.app_certificate,
+            channel_name=channel_name,
+            uid=agent_uid,
+            token_expire=3600,
+        )
+        properties: Dict[str, Any] = {
+            "channel": channel_name,
+            "token": token,
+            "agent_rtc_uid": str(agent_uid),
+            "remote_rtc_uids": [str(user_uid)],
+            "enable_string_uid": False,
+            "idle_timeout": 30,
+            "advanced_features": {"enable_rtm": True, "enable_tools": True},
+            "parameters": {
+                "audio_scenario": "chorus",
+                "data_channel": "rtm",
+                "enable_error_message": True,
+                "enable_metrics": True,
+            },
+            "llm": {"greeting_message": opening},
+        }
+        auth = {"additional_headers": {"Authorization": f"agora token={token}"}}
+        logger.info("Starting Studio agent role=%s pipeline_id=%s channel=%s", role, pipeline_id, channel_name)
+        response = await self.client.agents.start(
+            self.app_id,
+            name=f"{role}-{channel_name}",
+            properties=properties,
+            pipeline_id=pipeline_id,
+            request_options=auth,
+        )
+        agent_id = getattr(response, "agent_id", None) or ""
+        self._studio_auth[agent_id] = auth
+        return {
+            "agent_id": agent_id,
+            "channel_name": channel_name,
+            "status": "started",
+            "agent_mode": "pipeline",
+            "source": "studio",
+        }
 
     def _build_tts(self, locale: Optional[str] = None) -> MurfTTS:
         """Murf Falcon streaming TTS. An empty MURF_LOCALE lets Murf detect the
@@ -185,6 +245,12 @@ class Agent:
             raise ValueError("agent_mode must be 'pipeline' or 'realtime'")
         if agent_mode == "realtime" and not self.openai_realtime_api_key:
             raise ValueError("OPENAI_REALTIME_API_KEY is required for realtime mode")
+
+        studio_agent = self.studio_agents.get(role)
+        if studio_agent and agent_mode == "pipeline":
+            return await self._start_from_studio(
+                studio_agent, channel_name, agent_uid, user_uid, role, opening
+            )
 
         mcp_servers = build_mcp_servers(self.mcp_endpoint)
 
@@ -306,6 +372,12 @@ class Agent:
         """Stop a running agent. Falls back to the stateless client path."""
         if not agent_id or not str(agent_id).strip():
             raise ValueError("agent_id is required and cannot be empty")
+
+        studio_auth = self._studio_auth.pop(agent_id, None)
+        if studio_auth is not None:
+            await self.client.agents.stop(self.app_id, agent_id, request_options=studio_auth)
+            logger.info("Stopped Studio agent agent_id=%s", agent_id)
+            return
 
         session = self._sessions.pop(agent_id, None)
         if session:

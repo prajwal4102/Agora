@@ -143,7 +143,7 @@ SESSION_MAX_SECONDS = 15 * 60
 _live_sessions: Dict[str, Dict[str, Any]] = {}
 
 
-def _remember_session(agent_id: Optional[str], channel: str, role: str) -> None:
+def _remember_session(agent_id: Optional[str], channel: str, role: str, source: Optional[str] = None) -> None:
     """Note a voice agent that Agora has just started for a call."""
     if not agent_id or agent is None:
         return
@@ -154,6 +154,8 @@ def _remember_session(agent_id: Optional[str], channel: str, role: str) -> None:
         "role": role,
         "voice_agent": dispatch.VOICE_AGENT.get(role, "procurement_agent"),
         "started_at": time.time(),
+        # "studio": started from an agent saved in Agora Agent Studio.
+        "source": source or "code",
         "stt": f"Deepgram nova-3 ({voice['stt']})",
         "llm": agent.openai_model,
         "tts": f"Murf Falcon · {agent.murf_voice_id} ({voice['locale'] or 'auto'})",
@@ -299,7 +301,7 @@ async def start_agent(request: StartAgentRequest):
             role=role,
             greeting=greeting,
         )
-        _remember_session(result.get("agent_id"), request.channelName, role)
+        _remember_session(result.get("agent_id"), request.channelName, role, result.get("source"))
         return {"code": 0, "msg": "success", "data": {**result, "role": role}}
     except Exception as e:
         _log_route_error(

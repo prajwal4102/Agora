@@ -647,6 +647,11 @@ function PlatformStrip({ sessions, now }: { sessions: AgoraSession[]; now: numbe
 			<span className="font-semibold" style={{ color: agent.c }}>
 				{agent.label}
 			</span>
+			{live.source === "studio" ? (
+				<span className="rounded-md border px-1.5 py-0.5 font-semibold" style={{ borderColor: `${GOOD}66`, color: GOOD }}>
+					Agent Studio agent
+				</span>
+			) : null}
 			<span className={chip}>{live.stt}</span>
 			<span className="text-slate-600">→</span>
 			<span className={chip}>{live.llm}</span>
