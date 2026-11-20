@@ -18,7 +18,7 @@ const PIPELINES = {
 	pipeline: [
 		{ key: "stt", label: "Deepgram STT", metricTypes: ["stt", "asr"] },
 		{ key: "llm", label: "OpenAI LLM", metricTypes: ["llm"] },
-		{ key: "tts", label: "MiniMax TTS", metricTypes: ["tts"] },
+		{ key: "tts", label: "Murf Falcon TTS", metricTypes: ["tts"] },
 	],
 	realtime: [
 		{
