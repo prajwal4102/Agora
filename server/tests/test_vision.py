@@ -86,3 +86,12 @@ def test_new_seed_products_reach_an_existing_database(shop):
     assert shop.shelf_status("pens")["product"] == "pen"
     assert shop.supplier_quotes("pen", 50)["cheapest_that_can_fill"] == "Bharat Wholesale"
     assert shop.shelf_status("water bottle")["on_shelf"] == 1  # existing stock untouched
+
+
+def test_wrapped_products_are_described_for_the_reader_not_the_detector():
+    from vision import parse_detect_label, wrapped_description
+
+    label = "~a chocolate bar in its wrapper"
+    assert parse_detect_label(label) == []
+    assert wrapped_description(label) == "a chocolate bar in its wrapper"
+    assert wrapped_description("bottle|water bottle") is None
