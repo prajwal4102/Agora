@@ -32,11 +32,18 @@ MODEL_PATH = os.getenv(
 FRAMES_DIR = os.path.join(_BASE_DIR, "data", "frames")
 # How sure the detector must be, unless a product description sets its own floor.
 CONFIDENCE = float(os.getenv("VISION_CONFIDENCE", "0.3"))
-# What a wrapped product looks like to the shape detector, and how sure it must be.
+# What a wrapped product looks like to the shape detector.
 FLAT_SHAPES = ("banner", "wrapper", "packet")
-FLAT_FLOOR = float(os.getenv("VISION_FLAT_CONFIDENCE", "0.15"))
-# How sure the second step must be before a flat object counts as a product.
-READ_FLOOR = float(os.getenv("VISION_READ_CONFIDENCE", "0.5"))
+# The detector is asked for every object it can find down to this faint level.
+# Anything it is not sure about goes to the second step instead of being
+# dropped: with several wrapped bars side by side it finds all of them but
+# half-heartedly calls some "bottle", and those used to be thrown away.
+FIND_FLOOR = float(os.getenv("VISION_FIND_CONFIDENCE", "0.03"))
+# How sure the second step must be before an object counts as a wrapped product.
+READ_FLOOR = float(os.getenv("VISION_READ_CONFIDENCE", "0.8"))
+# A box mostly covered by other boxes of the same product is a second look at
+# the same items (often one box swallowing two neighbours), not another item.
+COVERED = float(os.getenv("VISION_COVERED", "0.6"))
 # Flat things on a table that are not products. Giving the reader these to
 # choose from stops it forcing every flat object into a product.
 NOT_PRODUCTS = (
@@ -125,6 +132,34 @@ class StableCounts:
 
 FLAT = "(flat object)"  # stand-in for "some wrapped product, not yet named"
 
+Found = Tuple[str, float, Tuple[int, int, int, int]]  # product, confidence, box corners
+
+
+def _area(box: Tuple[int, int, int, int]) -> int:
+    return max(0, box[2] - box[0]) * max(0, box[3] - box[1])
+
+
+def _without_repeats(found: List[Found]) -> List[Found]:
+    """Drop boxes that are a second look at items already counted.
+
+    Smallest boxes are kept first, since a small box is one item. A larger box
+    is then kept only if most of it shows something new; one that mostly covers
+    boxes already kept (typically a box around two neighbouring items) is not
+    another item."""
+    kept: List[Found] = []
+    for item in sorted(found, key=lambda entry: _area(entry[2])):
+        product, _, box = item
+        covered = 0
+        for other_product, _, other in kept:
+            if other_product == product:
+                covered += _area((
+                    max(box[0], other[0]), max(box[1], other[1]),
+                    min(box[2], other[2]), min(box[3], other[3]),
+                ))
+        if covered < COVERED * _area(box):
+            kept.append(item)
+    return kept
+
 
 class ShelfVision:
     def __init__(self) -> None:
@@ -164,7 +199,7 @@ class ShelfVision:
             for shape in FLAT_SHAPES:
                 prompts.append(shape)
                 class_product.append(FLAT)
-                class_floor.append(FLAT_FLOOR)
+                class_floor.append(FIND_FLOOR)
             self._load_reader(wrapped)
         model = YOLOWorld(MODEL_PATH)
         model.set_classes(prompts)
@@ -183,23 +218,32 @@ class ShelfVision:
             text = self._reader.encode_text(clip.tokenize(sentences))
             self._reader_text = text / text.norm(dim=-1, keepdim=True)
 
-    def _read_flat(self, frame: Any, box: Tuple[int, int, int, int]) -> Tuple[Optional[str], float]:
-        """Second step: which wrapped product is this flat object, if any?"""
+    def _read(self, frame: Any, boxes: List[Tuple[int, int, int, int]]) -> List[Tuple[Optional[str], float]]:
+        """Second step: for each object, which wrapped product is it, if any?
+        All objects are read in one pass, which is much quicker than one by one."""
         import cv2
         import torch
         from PIL import Image
 
-        x1, y1, x2, y2 = box
-        crop = frame[max(0, y1):y2, max(0, x1):x2]
-        if crop.size == 0:
-            return None, 0.0
-        image = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+        if not boxes or self._reader is None:
+            return [(None, 0.0)] * len(boxes)
+        height, width = frame.shape[:2]
+        images, usable = [], []
+        for x1, y1, x2, y2 in boxes:
+            crop = frame[max(0, y1):min(height, y2), max(0, x1):min(width, x2)]
+            usable.append(crop.size > 0)
+            if crop.size > 0:
+                images.append(self._reader_prepare(Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))))
+        if not images:
+            return [(None, 0.0)] * len(boxes)
         with torch.no_grad():
-            seen = self._reader.encode_image(self._reader_prepare(image).unsqueeze(0))
+            seen = self._reader.encode_image(torch.stack(images))
             seen = seen / seen.norm(dim=-1, keepdim=True)
-            scores = (100 * seen @ self._reader_text.T).softmax(-1)[0]
-        best = int(scores.argmax())
-        return self._reader_names[best], float(scores[best])
+            scores = (100 * seen @ self._reader_text.T).softmax(-1)
+        answers = iter(
+            (self._reader_names[int(row.argmax())], float(row.max())) for row in scores
+        )
+        return [next(answers) if ok else (None, 0.0) for ok in usable]
 
     def _keep_for_tuning(self, image_bytes: bytes) -> None:
         """Save about one frame a second, the newest 90, so detection problems
@@ -244,31 +288,33 @@ class ShelfVision:
         with self._lock:
             if self._model is None:
                 self._load()
-            # Ask for everything above the lowest floor, then hold each
-            # detection to the floor of its own product.
             result = self._model.predict(
-                frame, conf=min(self._class_floor), iou=OVERLAP, imgsz=IMAGE_SIZE,
+                frame, conf=min([FIND_FLOOR, *self._class_floor]), iou=OVERLAP, imgsz=IMAGE_SIZE,
                 agnostic_nms=True, verbose=False,
             )[0]
             height, width = frame.shape[:2]
-            boxes: List[Dict[str, Any]] = []
             frame_counts = {
                 name: 0 for name in dict.fromkeys([*self._class_product, *self._reader_names])
                 if name and name != FLAT
             }
+            # Step one: keep what the detector is sure of by shape, and set
+            # everything else aside for the reader.
+            found: List[Tuple[str, float, Tuple[int, int, int, int]]] = []
+            unsure: List[Tuple[int, int, int, int]] = []
             for box in result.boxes:
                 index = int(box.cls[0])
-                if float(box.conf[0]) < self._class_floor[index]:
-                    continue
+                corners = tuple(int(v) for v in box.xyxy[0])
                 product = self._class_product[index]
-                confidence = float(box.conf[0])
-                if product == FLAT:
-                    # A flat printed object: let the second step name it.
-                    corners = tuple(int(v) for v in box.xyxy[0])
-                    product, confidence = self._read_flat(frame, corners)
-                    if product is None or confidence < READ_FLOOR:
-                        continue
-                x1, y1, x2, y2 = (float(v) for v in box.xyxy[0])
+                if product != FLAT and float(box.conf[0]) >= self._class_floor[index]:
+                    found.append((product, float(box.conf[0]), corners))
+                else:
+                    unsure.append(corners)
+            # Step two: the reader names each unsure object, or rejects it.
+            for corners, (product, confidence) in zip(unsure, self._read(frame, unsure)):
+                if product is not None and confidence >= READ_FLOOR:
+                    found.append((product, confidence, corners))
+            boxes: List[Dict[str, Any]] = []
+            for product, confidence, (x1, y1, x2, y2) in _without_repeats(found):
                 boxes.append({
                     "product": product,
                     "confidence": round(confidence, 2),

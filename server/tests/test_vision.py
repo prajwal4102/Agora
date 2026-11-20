@@ -95,3 +95,22 @@ def test_wrapped_products_are_described_for_the_reader_not_the_detector():
     assert parse_detect_label(label) == []
     assert wrapped_description(label) == "a chocolate bar in its wrapper"
     assert wrapped_description("bottle|water bottle") is None
+
+
+def test_a_box_around_two_neighbours_is_not_a_third_item():
+    from vision import _without_repeats
+
+    left = ("chocolate bar", 0.99, (170, 80, 280, 300))
+    right = ("chocolate bar", 0.99, (246, 80, 360, 300))
+    both = ("chocolate bar", 0.99, (200, 80, 360, 300))  # swallows most of each
+    apart = ("chocolate bar", 0.99, (450, 80, 520, 300))
+    kept = _without_repeats([both, left, right, apart])
+    assert both not in kept and len(kept) == 3
+
+
+def test_overlap_between_different_products_is_kept():
+    from vision import _without_repeats
+
+    bottle = ("water bottle", 0.9, (100, 0, 200, 300))
+    bar_in_front = ("chocolate bar", 0.99, (110, 50, 190, 290))
+    assert len(_without_repeats([bottle, bar_in_front])) == 2

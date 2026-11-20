@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { type VisionResult, resetVision, sendVisionFrame } from "@/services/shop";
 
-const FRAME_WIDTH = 640; // frames are shrunk to this before upload
+const FRAME_WIDTH = 1280; // frames are sent at this width; detail matters for telling touching items apart
 const PAUSE_MS = 250; // rest between one answer and the next frame
 const COLOURS = ["#38bdf8", "#f59e0b", "#34d399", "#f472b6", "#a78bfa", "#fb7185"];
 
@@ -73,11 +73,12 @@ export function CameraPanel() {
 		if (video.videoWidth) {
 			const grab = grabRef.current ?? document.createElement("canvas");
 			grabRef.current = grab;
-			grab.width = FRAME_WIDTH;
-			grab.height = Math.round((video.videoHeight / video.videoWidth) * FRAME_WIDTH);
+			// Never enlarge: a camera that only gives 640 is sent as 640.
+			grab.width = Math.min(FRAME_WIDTH, video.videoWidth);
+			grab.height = Math.round((video.videoHeight / video.videoWidth) * grab.width);
 			grab.getContext("2d")?.drawImage(video, 0, 0, grab.width, grab.height);
 			const blob = await new Promise<Blob | null>((resolve) =>
-				grab.toBlob(resolve, "image/jpeg", 0.75),
+				grab.toBlob(resolve, "image/jpeg", 0.85),
 			);
 			if (blob && runningRef.current) {
 				try {
@@ -112,8 +113,8 @@ export function CameraPanel() {
 				const stream = await navigator.mediaDevices.getUserMedia({
 					audio: false,
 					video: chosenDevice
-						? { deviceId: { exact: chosenDevice }, width: { ideal: 1280 } }
-						: { width: { ideal: 1280 }, facingMode: "environment" },
+						? { deviceId: { exact: chosenDevice }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+						: { width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: "environment" },
 				});
 				streamRef.current = stream;
 				const video = videoRef.current;
