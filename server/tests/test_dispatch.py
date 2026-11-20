@@ -132,3 +132,59 @@ def test_a_call_where_nothing_was_done_says_so(shop, dispatch):
     dispatch.set_call_status(call["call_id"], "answered")
     dispatch.set_call_status(call["call_id"], "ended")
     assert shop.list_events()[-1]["title"] == "Summary: no action taken"
+
+
+def test_a_promise_is_told_apart_from_an_answer():
+    from call_watch import looks_like_unkept_promise
+
+    # What the agent really said on a call before going silent for 78 seconds.
+    assert looks_like_unkept_promise("Checking now.Sure, I'll check the current stock status again. One moment. ")
+    assert looks_like_unkept_promise("Let me verify that for you.")
+    assert looks_like_unkept_promise("एक second, मैं check कर रही हूँ।")
+    # Answers and questions hand the turn back properly.
+    assert not looks_like_unkept_promise("We have 2 chocolate bars on the shelf and none in the back room.")
+    assert not looks_like_unkept_promise("Shall I check suppliers for a reorder?")
+    assert not looks_like_unkept_promise("Order number 3 is placed and arrives in twelve hours.")
+
+
+def test_a_stalled_agent_is_pushed_once_and_only_when_it_did_nothing(shop):
+    import time
+
+    from call_watch import CallWatcher
+
+    class Line:
+        def __init__(self, role, content, start, end):
+            self.role, self.content, self.speech_start_ms, self.speech_end_ms = role, content, start, end
+
+    now = time.time()
+    ms = lambda seconds_ago: int((now - seconds_ago) * 1000)  # noqa: E731
+    call = [
+        Line("user", "Wait, check once again, it might be there.", ms(12), ms(10)),
+        Line("assistant", "Sure, I'll check the current stock status again. One moment.", ms(9), ms(6)),
+    ]
+    watcher = CallWatcher("supervisor", "procurement_agent")
+    assert watcher.stalled(call, now) is True       # promised, six seconds of nothing
+    assert watcher.stalled(call, now) is False      # pushed once, not again
+
+    # Same promise, but a tool call followed: the answer is coming, leave it alone.
+    shop.log_event("tool", "Checked shelf and back-room stock", {"tool": "get_shelf_status"})
+    assert CallWatcher("supervisor", "procurement_agent").stalled(call, now) is False
+
+    # The person spoke last: the agent is about to reply.
+    waiting = call + [Line("user", "Hello?", ms(2), ms(1))]
+    assert CallWatcher("supervisor", "procurement_agent").stalled(waiting, now) is False
+
+
+def test_the_call_is_captioned_line_by_line(shop):
+    from call_watch import NUDGE, CallWatcher
+
+    class Line:
+        def __init__(self, role, content):
+            self.role, self.content = role, content
+
+    watcher = CallWatcher("supervisor", "procurement_agent")
+    first = watcher.captions([Line("assistant", "Hello, this is Asha."), Line("user", "Check the suppliers.")])
+    assert [(c["agent"], c["to"]) for c in first] == [("procurement_agent", "supervisor"), ("supervisor", "procurement_agent")]
+    later = watcher.captions([Line("assistant", "Hello, this is Asha."), Line("user", "Check the suppliers."),
+                              Line("user", NUDGE), Line("assistant", "Sri Lakshmi is cheapest.")])
+    assert [c["text"] for c in later] == ["Sri Lakshmi is cheapest."]   # no repeats, and the push is not shown

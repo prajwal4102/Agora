@@ -247,6 +247,14 @@ def log_event(
         )
 
 
+def tool_called_since(timestamp: float) -> bool:
+    """Has any tool call been logged since this moment?"""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT 1 FROM events WHERE kind='tool' AND ts >= ? LIMIT 1", (timestamp,)
+        ).fetchone() is not None
+
+
 def last_event_id() -> int:
     with _connect() as conn:
         return conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]

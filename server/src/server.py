@@ -40,6 +40,7 @@ import mcp_server  # exposes `mcp = FastMCP(...)`
 import asyncio
 import threading
 
+import call_watch
 import dispatch
 import shop_db
 import telephony
@@ -60,9 +61,49 @@ async def _lifespan(_app):
     # Load the shelf detector in the background so the first camera frame is fast.
     threading.Thread(target=shelf_vision.warm_up, daemon=True).start()
     callbacks = asyncio.create_task(_callback_loop())
+    watcher = asyncio.create_task(_call_watch_loop())
     async with mcp_server.mcp.session_manager.run():
         yield
     callbacks.cancel()
+    watcher.cancel()
+
+
+_watchers: Dict[str, "call_watch.CallWatcher"] = {}
+
+
+async def _call_watch_loop() -> None:
+    """Every couple of seconds, read each live call from Agora: caption it on
+    the dashboard, and push the agent if it promised to check and then stalled."""
+    while True:
+        await asyncio.sleep(1.5)
+        for agent_id, info in list(_live_sessions.items()):
+            auth = agent.auth_for(agent_id) if agent else None
+            if auth is None:
+                continue
+            watcher = _watchers.setdefault(
+                agent_id, call_watch.CallWatcher(info["role"], info["voice_agent"])
+            )
+            try:
+                history = await agent.client.agents.get_history(agent.app_id, agent_id, request_options=auth)
+            except Exception as exc:
+                if "TaskNotFound" in str(exc) or "404" in str(exc):
+                    _live_sessions.pop(agent_id, None)  # the call is over
+                    _watchers.pop(agent_id, None)
+                continue
+            contents = list(getattr(history, "contents", None) or [])
+            for line in watcher.captions(contents):
+                shop_db.log_event("speech", line["text"], agent=line["agent"], to=line["to"])
+            if watcher.stalled(contents):
+                shop_db.log_event(
+                    "decision", "The agent promised to check but did not act. Telling it to do it now.",
+                    agent="dispatcher", to=info["voice_agent"],
+                )
+                try:
+                    await agent.client.agent_management.agent_think(
+                        agent.app_id, agent_id, text=call_watch.NUDGE, request_options=auth
+                    )
+                except Exception:
+                    logger.exception("Could not nudge a stalled agent agent_id=%s", agent_id)
 
 
 async def _callback_loop() -> None:

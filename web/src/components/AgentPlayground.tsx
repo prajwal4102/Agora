@@ -164,6 +164,7 @@ type Group = {
 	text: string; // what happened
 	tools: Tool[];
 	isShelf: boolean;
+	isSpeech: boolean; // something said on the call: shown as a caption, on two lines
 };
 
 const GOOD = "#34d399";
@@ -200,7 +201,9 @@ const TOOL_BAND = 122; // extra height when a block has tools (circles + result 
 const ACTIVE_MS = 2300;
 const PACE_MS = 750;
 
-const blockH = (group: Group) => CARD_H + (group.tools.length ? TOOL_BAND : 0);
+const SPEECH_H = 76; // captions get a second line
+const cardH = (group: Group) => (group.isSpeech ? SPEECH_H : CARD_H);
+const blockH = (group: Group) => cardH(group) + (group.tools.length ? TOOL_BAND : 0);
 
 function curve(a: [number, number], b: [number, number]): string {
 	if (Math.abs(b[0] - a[0]) < 10) {
@@ -237,8 +240,8 @@ function StepCard({ group, y, active }: { group: Group; y: number; active: boole
 		left: MAIN_X - CARD_W / 2,
 		top: y,
 		width: CARD_W,
-		height: CARD_H,
-		background: CARD_BG,
+		height: cardH(group),
+		background: group.isSpeech ? "#152238" : CARD_BG,
 		border: `1px solid ${active ? group.color : "rgba(148,163,184,0.26)"}`,
 		"--glow-ring": `${group.color}55`,
 		"--glow-soft": `${group.color}66`,
@@ -258,7 +261,11 @@ function StepCard({ group, y, active }: { group: Group; y: number; active: boole
 					<div className="truncate text-[9px] font-bold tracking-[0.12em]" style={{ color: group.color }}>
 						{group.title}
 					</div>
-					<div className="truncate text-[12px] font-semibold leading-tight text-white">{group.text}</div>
+					{group.isSpeech ? (
+						<div className="line-clamp-2 text-[12px] font-medium italic leading-snug text-slate-100">“{group.text}”</div>
+					) : (
+						<div className="truncate text-[12px] font-semibold leading-tight text-white">{group.text}</div>
+					)}
 				</div>
 				<div className="shrink-0">
 					{active ? (
@@ -736,7 +743,7 @@ export function AgentPlayground({
 					const next =
 						last && last.actor === actor && last.tools.length
 							? [...groups.slice(0, -1), { ...last, tools: [...last.tools, tool] }]
-							: [...groups, { id, actor, color: META[actor].c, at, title: `${heading} · RUNNING ACTIONS`, text: "Working with tools", tools: [tool], isShelf: false }];
+							: [...groups, { id, actor, color: META[actor].c, at, title: `${heading} · RUNNING ACTIONS`, text: "Working with tools", tools: [tool], isShelf: false, isSpeech: false }];
 					return { ...all, [tab]: next };
 				}
 				const isShelf = event.kind === "shelf";
@@ -744,7 +751,8 @@ export function AgentPlayground({
 					// A run of counts is one step that keeps updating, not a pile of boxes.
 					return { ...all, [tab]: [...groups.slice(0, -1), { ...last, id, at, text: event.title }] };
 				}
-				return { ...all, [tab]: [...groups, { id, actor, color, at, title: heading, text: event.title, tools: [], isShelf }] };
+				const isSpeech = event.kind === "speech";
+				return { ...all, [tab]: [...groups, { id, actor, color, at, title: isSpeech ? `${heading} · SAID` : heading, text: event.title, tools: [], isShelf, isSpeech }] };
 			});
 			if (animate && !isTool) {
 				setFlightIds((f) => [...f, { id: `f${id}`, group: id, color, tab }]);
@@ -827,12 +835,12 @@ export function AgentPlayground({
 	const stageH = Math.max(560, cursor + 40);
 	const now = Date.now();
 	const isActive = (id: string, at: number) => activeId === id && now - at < ACTIVE_MS;
-	const toolPos = (gi: number, ti: number, n: number): [number, number] => [MAIN_X + (ti - (n - 1) / 2) * TOOL_GAP, tops[gi] + CARD_H + 46];
+	const toolPos = (gi: number, ti: number, n: number): [number, number] => [MAIN_X + (ti - (n - 1) / 2) * TOOL_GAP, tops[gi] + cardH(groups[gi]) + 46];
 
 	const wires: Wire[] = [];
 	groups.forEach((group, i) => {
 		const next = groups[i + 1];
-		const cardBottom: [number, number] = [MAIN_X, tops[i] + CARD_H];
+		const cardBottom: [number, number] = [MAIN_X, tops[i] + cardH(group)];
 		const nextTop: [number, number] | null = next ? [MAIN_X, tops[i + 1]] : null;
 		const n = group.tools.length;
 		const fresh = isActive(group.id, group.at) || group.tools.some((tool) => isActive(tool.id, tool.at));

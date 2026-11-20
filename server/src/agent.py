@@ -390,6 +390,13 @@ class Agent:
             "agent_mode": agent_mode,
         }
 
+    def auth_for(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """The request options needed to ask Agora about a call we started."""
+        if agent_id in self._studio_auth:
+            return self._studio_auth[agent_id]
+        session = self._sessions.get(agent_id)
+        return session._request_options() if session is not None else None  # noqa: SLF001
+
     async def stop(self, agent_id: str) -> None:
         """Stop a running agent. Falls back to the stateless client path."""
         if not agent_id or not str(agent_id).strip():

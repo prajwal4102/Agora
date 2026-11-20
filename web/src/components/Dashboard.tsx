@@ -252,6 +252,7 @@ const KIND_STYLE: Record<ShopEvent["kind"], { label: string; dot: string }> = {
 	tool: { label: "Tool", dot: "bg-amber-400" },
 	stock: { label: "Stock", dot: "bg-orange-400" },
 	system: { label: "System", dot: "bg-slate-500" },
+	speech: { label: "Said", dot: "bg-teal-400" },
 };
 
 /** One line of plain English for what a tool call returned. */

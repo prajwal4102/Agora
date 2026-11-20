@@ -61,7 +61,7 @@ export interface ShopState {
 export interface ShopEvent {
   id: number
   ts: number
-  kind: 'shelf' | 'decision' | 'call' | 'tool' | 'stock' | 'system'
+  kind: 'shelf' | 'decision' | 'call' | 'tool' | 'stock' | 'system' | 'speech'
   title: string
   detail: Record<string, unknown>
 }
