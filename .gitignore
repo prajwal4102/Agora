@@ -39,3 +39,6 @@ _reference_sakarmi/
 
 # local demo database (rebuilt from seed data on first run)
 server/data/
+
+# detector text-model weights (downloaded on first run)
+weights/

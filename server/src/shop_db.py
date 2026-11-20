@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS events (
 # name, aliases, detect_label, unit, pack, shelf, capacity, threshold, backroom, daily_sales
 SEED_PRODUCTS = [
     ("water bottle", "water,bisleri,pani,paani,bottle", "bottle|water bottle", "bottle", 12, 10, 12, 4, 24, 60),
-    ("chocolate bar", "chocolate,dairy milk,choco,munch", "~a chocolate bar in its wrapper", "bar", 24, 8, 10, 3, 0, 36),
+    ("chocolate bar", "chocolate,dairy milk,choco,munch", "~a chocolate bar in its wrapper", "bar", 24, 5, 6, 2, 0, 36),
     ("cola can", "cola,coke,soft drink,cold drink,can", "soda can|tin can", "can", 24, 9, 12, 4, 0, 40),
     ("biscuit packet", "biscuit,biscuits,parle,cookies", "", "packet", 20, 10, 12, 4, 40, 50),
     ("pen", "pens,ball pen,ballpen,ballpoint,kalam", "pen@0.1|ballpoint pen@0.1", "pen", 10, 5, 6, 2, 30, 25),
