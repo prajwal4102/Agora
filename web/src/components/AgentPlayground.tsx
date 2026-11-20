@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { ShopEvent } from "@/services/shop";
+import type { AgoraSession, ShopEvent } from "@/services/shop";
 
 /**
  * Agent Playground — EXECUTION TRACE.
@@ -64,7 +64,19 @@ const META: Record<AgentKey, Meta> = {
 	shop_tools: { Icon: Wrench, label: "Shop Tools · MCP", sub: "Stock · sales · 3 suppliers · budget", kind: "TOOLS", c: "#94a3b8", g: ["#94a3b8", "#475569"] },
 };
 
-const DETAILS: Record<AgentKey, { role: string; points: string[]; tools?: string[]; note?: string }> = {
+/** What a voice agent is made of. Everything here is run by Agora's cloud for
+ *  the length of a call; our backend only starts it and answers its tool calls. */
+const VOICE_STACK = [
+	"Agora Conversational AI Engine",
+	"Agora RTC · live audio",
+	"Agora RTM · transcripts",
+	"Deepgram nova-3 · speech-to-text",
+	"GPT-4o mini · reasoning",
+	"Murf Falcon · voice",
+	"MCP · tools called from Agora's cloud",
+];
+
+const DETAILS: Record<AgentKey, { role: string; points: string[]; tools?: string[]; note?: string; stack?: string[] }> = {
 	employee: {
 		role: "The person on the shop floor",
 		points: [
@@ -89,6 +101,7 @@ const DETAILS: Record<AgentKey, { role: string; points: string[]; tools?: string
 			"If the stock is missing, corrects the count and hands the case back to the Dispatcher",
 		],
 		tools: ["get_refill_tasks", "complete_refill_task", "report_backroom_shortage", "get_shelf_status"],
+		stack: VOICE_STACK,
 	},
 	procurement_agent: {
 		role: "Voice agent · talks to the supervisor",
@@ -99,6 +112,7 @@ const DETAILS: Record<AgentKey, { role: string; points: string[]; tools?: string
 		],
 		tools: ["get_sales_rate", "get_supplier_quotes", "get_budget", "propose_order", "confirm_order", "get_order_status", "schedule_callback"],
 		note: "Cannot place an order by itself: every purchase goes through the Order Gate.",
+		stack: VOICE_STACK,
 	},
 	dispatcher: {
 		role: "Triage · who needs to act",
@@ -579,6 +593,18 @@ function Architecture({ onClose, live }: { onClose: () => void; live: { from: Ag
 								))}
 							</div>
 						) : null}
+						{detail.stack ? (
+							<div className="mt-3">
+								<p className="text-[9px] font-bold tracking-[0.12em] text-slate-500">RUNS ON</p>
+								<ul className="mt-1.5 space-y-1">
+									{detail.stack.map((layer) => (
+										<li key={layer} className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[10.5px] text-slate-300">
+											{layer}
+										</li>
+									))}
+								</ul>
+							</div>
+						) : null}
 						{detail.note ? (
 							<p className="mt-3 rounded-lg border px-2.5 py-2 text-[11px] leading-snug" style={{ borderColor: `${detail.c}55`, color: detail.c, background: `${detail.c}0f` }}>
 								{detail.note}
@@ -591,14 +617,60 @@ function Architecture({ onClose, live }: { onClose: () => void; live: { from: Ag
 	);
 }
 
+/** A strip that says, in plain sight, what the voice runs on, and shows the
+ *  real Agora session while a call is live. */
+function PlatformStrip({ sessions, now }: { sessions: AgoraSession[]; now: number }) {
+	const live = sessions[sessions.length - 1];
+	const chip = "rounded-md border border-white/10 bg-white/[0.05] px-1.5 py-0.5 text-slate-300";
+	if (!live) {
+		return (
+			<div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-white/[0.07] bg-[#070c18] px-4 py-1.5 text-[10.5px]">
+				<span className="flex items-center gap-1.5 font-bold tracking-[0.1em] text-slate-400">
+					<span className="h-1.5 w-1.5 rounded-full bg-slate-600" />
+					AGORA CONVERSATIONAL AI · READY
+				</span>
+				<span className="text-slate-500">
+					Voice agents run in Agora's cloud: Deepgram speech-to-text → GPT-4o mini → Murf Falcon, with tools called over MCP
+				</span>
+			</div>
+		);
+	}
+	const seconds = Math.max(0, Math.round(now / 1000 - live.started_at));
+	const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+	const agent = isAgent(live.voice_agent) ? META[live.voice_agent] : META.procurement_agent;
+	return (
+		<div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-white/[0.07] bg-[#06120f] px-4 py-1.5 text-[10.5px]">
+			<span className="flex items-center gap-1.5 font-bold tracking-[0.1em]" style={{ color: GOOD }}>
+				<span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: GOOD }} />
+				LIVE ON AGORA CONVERSATIONAL AI
+			</span>
+			<span className="font-semibold" style={{ color: agent.c }}>
+				{agent.label}
+			</span>
+			<span className={chip}>{live.stt}</span>
+			<span className="text-slate-600">→</span>
+			<span className={chip}>{live.llm}</span>
+			<span className="text-slate-600">→</span>
+			<span className={chip}>{live.tts}</span>
+			<span className="ml-auto flex items-center gap-2 font-mono text-slate-500">
+				<span title="Agora agent session id">session {live.agent_id.slice(0, 10)}…</span>
+				<span title="Agora RTC channel">{live.channel}</span>
+				<span className="tabular-nums text-slate-300">{clock}</span>
+			</span>
+		</div>
+	);
+}
+
 type Tabs = Record<string, Group[]>;
 
 export function AgentPlayground({
 	events,
 	summarise,
+	sessions = [],
 }: {
 	events: ShopEvent[];
 	summarise: (detail: Record<string, unknown>) => string | null;
+	sessions?: AgoraSession[];
 }) {
 	const seen = useRef(0);
 	const queue = useRef<ShopEvent[]>([]);
@@ -825,6 +897,8 @@ export function AgentPlayground({
 					</button>
 				</span>
 			</div>
+
+			<PlatformStrip sessions={sessions} now={now} />
 
 			{groups.length === 0 ? (
 				<div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center" style={{ background: CANVAS_BG }}>

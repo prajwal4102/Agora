@@ -32,11 +32,24 @@ export interface ShopCall {
   status: 'ringing' | 'answered' | 'ended' | 'declined' | 'missed'
 }
 
+/** A voice agent Agora is running for a call right now. */
+export interface AgoraSession {
+  agent_id: string
+  channel: string
+  role: 'employee' | 'supervisor'
+  voice_agent: string
+  started_at: number
+  stt: string
+  llm: string
+  tts: string
+}
+
 export interface ShopState {
   products: ShelfProduct[]
   budget_remaining: number
   /** Newest event id on the server; lower than ours means the demo was reset. */
   last_event_id: number
+  agora?: { sessions: AgoraSession[] }
   orders: ShopOrder[]
   calls: ShopCall[]
   refill_tasks: { task_id: number; product: string; bring_quantity: number }[]

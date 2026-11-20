@@ -138,6 +138,37 @@ except ValueError as e:
     agent = None
 
 
+# --- What is running on Agora right now, for the dashboard to show ---
+SESSION_MAX_SECONDS = 15 * 60
+_live_sessions: Dict[str, Dict[str, Any]] = {}
+
+
+def _remember_session(agent_id: Optional[str], channel: str, role: str) -> None:
+    """Note a voice agent that Agora has just started for a call."""
+    if not agent_id or agent is None:
+        return
+    voice = agent.role_voice.get(role, agent.role_voice["supervisor"])
+    _live_sessions[agent_id] = {
+        "agent_id": agent_id,
+        "channel": channel,
+        "role": role,
+        "voice_agent": dispatch.VOICE_AGENT.get(role, "procurement_agent"),
+        "started_at": time.time(),
+        "stt": f"Deepgram nova-3 ({voice['stt']})",
+        "llm": agent.openai_model,
+        "tts": f"Murf Falcon · {agent.murf_voice_id} ({voice['locale'] or 'auto'})",
+    }
+
+
+def _agora_status() -> Dict[str, Any]:
+    """Live Agora sessions. One that outlives any real call was left behind by
+    a closed page, so it is dropped."""
+    cutoff = time.time() - SESSION_MAX_SECONDS
+    for agent_id in [key for key, value in _live_sessions.items() if value["started_at"] < cutoff]:
+        _live_sessions.pop(agent_id, None)
+    return {"sessions": sorted(_live_sessions.values(), key=lambda item: item["started_at"])}
+
+
 # FastAPI application
 app = FastAPI(
     title="Agora MCP Recipe Service",
@@ -268,6 +299,7 @@ async def start_agent(request: StartAgentRequest):
             role=role,
             greeting=greeting,
         )
+        _remember_session(result.get("agent_id"), request.channelName, role)
         return {"code": 0, "msg": "success", "data": {**result, "role": role}}
     except Exception as e:
         _log_route_error(
@@ -290,6 +322,7 @@ async def stop_agent(request: StopAgentRequest):
         )
 
     try:
+        _live_sessions.pop(request.agentId, None)
         await agent.stop(request.agentId)
         return {"code": 0, "msg": "success"}
     except Exception as e:
@@ -301,7 +334,7 @@ async def stop_agent(request: StopAgentRequest):
 @router.get("/state")
 async def shop_state():
     """Shelf, back-room, budget and recent orders."""
-    return {"code": 0, "data": dispatch.snapshot()}
+    return {"code": 0, "data": {**dispatch.snapshot(), "agora": _agora_status()}}
 
 
 @router.get("/events")

@@ -145,7 +145,7 @@ export default function Dashboard() {
 							{showLog ? "Show playground" : "Show raw log"}
 						</button>
 					</div>
-					{showLog ? <Trail events={events} /> : <AgentPlayground events={events} summarise={toolSummary} />}
+					{showLog ? <Trail events={events} /> : <AgentPlayground events={events} summarise={toolSummary} sessions={state?.agora?.sessions ?? []} />}
 				</section>
 
 			</div>
