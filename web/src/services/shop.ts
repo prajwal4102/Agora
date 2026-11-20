@@ -35,6 +35,8 @@ export interface ShopCall {
 export interface ShopState {
   products: ShelfProduct[]
   budget_remaining: number
+  /** Newest event id on the server; lower than ours means the demo was reset. */
+  last_event_id: number
   orders: ShopOrder[]
   calls: ShopCall[]
   refill_tasks: { task_id: number; product: string; bring_quantity: number }[]

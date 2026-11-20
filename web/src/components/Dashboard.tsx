@@ -48,6 +48,12 @@ export default function Dashboard() {
 				getShopEvents(lastEventId.current),
 			]);
 			setState(nextState);
+			if (nextState.last_event_id < lastEventId.current) {
+				// The demo was reset from another page or phone: start our trail again.
+				lastEventId.current = 0;
+				setEvents([]);
+				return;
+			}
 			const unseen = fresh.filter((event) => event.id > lastEventId.current);
 			if (unseen.length) {
 				lastEventId.current = unseen[unseen.length - 1].id;
@@ -115,13 +121,17 @@ export default function Dashboard() {
 				</div>
 			</header>
 
-			<div className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)_minmax(0,0.7fr)]">
+			<div className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.7fr)]">
 				<section className="flex min-h-0 flex-col gap-3 overflow-y-auto">
 					<SectionTitle icon={<ScanLine className="h-4 w-4" aria-hidden />}>Shelf</SectionTitle>
 					<CameraPanel />
 					{state?.products.map((product) => (
 						<ShelfCard key={product.product} product={product} onChange={changeShelf} />
 					))}
+					<SectionTitle icon={<PhoneCall className="h-4 w-4" aria-hidden />}>Calls</SectionTitle>
+					<CallPanel call={liveCall} recent={state?.calls ?? []} />
+					<SectionTitle icon={<PackageCheck className="h-4 w-4" aria-hidden />}>Orders</SectionTitle>
+					<OrdersPanel state={state} />
 				</section>
 
 				<section className="flex min-h-0 flex-col gap-3">
@@ -138,12 +148,6 @@ export default function Dashboard() {
 					{showLog ? <Trail events={events} /> : <AgentPlayground events={events} summarise={toolSummary} />}
 				</section>
 
-				<section className="flex min-h-0 flex-col gap-3 overflow-y-auto">
-					<SectionTitle icon={<PhoneCall className="h-4 w-4" aria-hidden />}>Calls</SectionTitle>
-					<CallPanel call={liveCall} recent={state?.calls ?? []} />
-					<SectionTitle icon={<PackageCheck className="h-4 w-4" aria-hidden />}>Orders</SectionTitle>
-					<OrdersPanel state={state} />
-				</section>
 			</div>
 		</div>
 	);

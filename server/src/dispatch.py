@@ -369,6 +369,8 @@ def snapshot() -> Dict[str, Any]:
     for product in data["products"]:
         product["refill_pending"] = product["product"] in refilling
         product["on_order"] = product["product"] in on_order
+    # Lets a dashboard notice that the demo was reset from somewhere else.
+    data["last_event_id"] = shop_db.last_event_id()
     data["calls"] = [_call_view(c) for c in calls]
     data["refill_tasks"] = tasks
     data["proposals"] = [dict(p) for p in proposals]

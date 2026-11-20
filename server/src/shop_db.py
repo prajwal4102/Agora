@@ -239,6 +239,11 @@ def log_event(
         )
 
 
+def last_event_id() -> int:
+    with _connect() as conn:
+        return conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]
+
+
 def list_events(after_id: int = 0, limit: int = 200) -> List[Dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
