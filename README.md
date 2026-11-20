@@ -1,217 +1,162 @@
-# Agora Conversational AI — MCP Recipe (Python)
+# Asha: the shelf agent that calls you
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue)](https://www.python.org/)
-[![Bun](https://img.shields.io/badge/bun-latest-black)](https://bun.sh/)
+A voice agent for a supermarket. A camera watches the shelf. When a product
+runs low, the agent works out what to do and **phones the right person**:
 
-The **mcp** recipe in the Agora Conversational AI recipes family. An OpenAI
-Pipeline or Realtime model emits a tool call, Agora invokes the FastMCP server
-mounted at `/mcp` in the same backend process, returns the result, and the model
-speaks it.
+- Stock is in the back room → it calls the **floor employee**, in Hinglish, and
+  asks them to refill the shelf.
+- The back room is empty → it compares suppliers, calls the **supervisor** with
+  a recommendation, negotiates quantity and supplier by voice, and places the
+  order only after a spoken yes.
 
-Pipeline mode is **zero-key by default** because OpenAI, Deepgram STT, and
-MiniMax TTS are Agora-managed. Set `OPENAI_API_KEY` to use your own OpenAI
-credentials, and optionally override `OPENAI_BASE_URL` for a compatible
-endpoint. Realtime mode uses the separate `OPENAI_REALTIME_API_KEY`. The mock
-`get_time` tool needs no external credentials; replace it in
-`server/src/mcp_server.py`.
+Either person can also call the agent to ask about stock or orders.
 
-**Distinct from `recipe-agent-tool-calling`**: in that recipe the tools run
-inside the `llm/` endpoint. Here Agora orchestrates them via the MCP protocol —
-the selected OpenAI path issues a tool call, Agora invokes `MCP_ENDPOINT`, and
-the result flows back to the model.
+Built solo for **Build with Agora – BLR** (Track 3: AI Agents That Get Things
+Done) on Agora Conversational AI and Murf Falcon.
 
-## Prerequisites
+## Why an agent and not an alert
 
-- [Python 3.10+](https://www.python.org/)
-- [Bun](https://bun.sh/)
-- [Agora CLI](https://github.com/AgoraIO/cli) — makes generating an App ID + App Certificate easy
-- [ngrok](https://ngrok.com/) — the backend (including the `/mcp` endpoint) must be publicly reachable so Agora cloud can call it
+A threshold alert can tell you a shelf is low. It cannot decide who should act,
+check whether stock is sitting in the back room, find that the cheapest supplier
+is out, fit an order to the budget, or change the order when the supervisor says
+"too much, make it half". Asha does each of those with tools, out loud, and
+shows every step on screen.
 
-The same commands work on macOS, Linux, and Windows. On macOS/Linux, setup uses
-`python3`; on Windows, it uses the Python launcher (`py`) or `python`. WSL and
-virtualenv activation are not required.
+## The demo in two minutes
 
-## Run It
+1. Take chocolate bars off the shelf in front of the camera.
+2. The dashboard shows the count drop and the agent's decision: *low, back room
+   empty, calling the supervisor*.
+3. The supervisor's phone rings. The agent explains, checks sales and three
+   suppliers live, and recommends one. The cheapest cannot fill the order.
+4. Push back: "order half", "who is fastest?", "keep it under 3,000".
+   It re-prices, reads the total back, and waits.
+5. Say yes. The order appears on the dashboard with its number and arrival time.
+6. Take pens off the shelf. This time the employee's phone rings, in Hinglish,
+   because pens are in the back room. Put pens back and the camera confirms the
+   refill by itself.
+
+## How it works
+
+```
+ Shelf camera ──frames──► Detector (local) ──steady counts──► Triage
+                                                                │
+                              back room has stock ◄─────────────┼────────────► back room empty
+                                      │                                               │
+                              ring the employee                               ring the supervisor
+                                      │                                               │
+                                      └──────────► Agora Conversational AI ◄──────────┘
+                                                   speech-to-text → LLM → Murf Falcon
+                                                              │ tool calls (MCP)
+                                                              ▼
+                                         shop tools: stock, sales, quotes, budget,
+                                         propose order, confirm order, refill, callback
+```
+
+| Piece | What it does | Where |
+|---|---|---|
+| Voice agent | One agent per call, briefed for the person it is calling | Agora Conversational AI, started from `server/src/agent.py` |
+| Voice | English to the supervisor, Hinglish to the employee, same voice | Murf Falcon (`hi-IN` and `en-IN`) |
+| Tools | Eleven shop tools the model calls during the call | MCP server, `server/src/mcp_server.py` |
+| Business rules | Stock, suppliers, budget, the order gate | `server/src/shop_db.py` |
+| Triage and calls | Who to call and why, the call queue, refill tasks | `server/src/dispatch.py` |
+| Shelf camera | Finds and counts products in webcam frames, locally | `server/src/vision.py` |
+| Dashboard | Shelf, live trail of the agent's steps, calls, orders | `web/src/components/Dashboard.tsx` |
+| Phone page | Rings, answers, and lets either person call in | `web/src/components/PhoneApp.tsx` |
+
+### The order gate
+
+The model cannot place an order by deciding to. `propose_order` prices an order
+and stores it as a proposal; `confirm_order` only places an order that matches
+a live proposal and carries the supervisor's words of approval. A changed
+quantity replaces the old proposal, so a stale one cannot be confirmed. The
+supplier's stock and the budget are checked again at confirmation.
+
+### The shelf camera
+
+Recognition runs on the laptop, with no cloud vision service.
+
+- An open-vocabulary detector (YOLO-World) is given the catalogue's product
+  names as text, so adding a product is adding a description, with no training.
+- Flat wrapped products cannot be named by shape: to the detector a chocolate
+  bar in its wrapper is a "banner". Those go to a second model (CLIP), which
+  reads each object and names the product or rejects it.
+- A count is only believed after it holds steady for three frames, and a
+  product is only tracked once it has been seen steadily, so a passing hand or a
+  blurred frame does not ring anyone.
+- When the camera sees stock return after a refill request or an order, it marks
+  that as done. The outcome is verified by sight, not by anyone's word.
+
+### Real phone calls
+
+The demo rings a web page on each phone over Agora RTC. Dialling real mobiles
+through a Twilio SIP trunk is implemented in `server/src/telephony.py` and is
+switched on with `CALL_MODE=phone`. It has not been run against a live trunk,
+because that needs a paid Twilio account, so it is off by default. If a phone
+call cannot be placed, the call still rings on the web page.
+
+## Run it
+
+You need Python 3.10+, [Bun](https://bun.sh/), the
+[Agora CLI](https://github.com/AgoraIO/cli), [ngrok](https://ngrok.com/) with a
+free static domain, and a [Murf API key](https://murf.ai/api/dashboard).
 
 ```bash
-# 1. Install Python venv + web deps
-bun run setup
-
-# 2. Add Agora credentials to server/.env.local
+bun run setup                               # Python venv + web dependencies
 agora login
-agora project use <your-project>
-agora project env write server/.env.local
-
-# 3. Expose the backend publicly — Agora cloud calls /mcp on this tunnel
-ngrok http 8000
-
-# 4. Set MCP_ENDPOINT in server/.env.local (use whatever domain ngrok prints)
-#    MCP_ENDPOINT=https://<your-tunnel>.ngrok-free.dev/mcp
-
-# 5. Run the backend and the web frontend
-bun run dev
+agora project env write server/.env.local   # Agora App ID and Certificate
 ```
 
-Open [http://localhost:3000](http://localhost:3000) → **Start Conversation** →
-ask "what time is it?".
+Add to `server/.env.local`:
 
-### Working from a clone
+```
+MURF_API_KEY=your_murf_api_key
+MCP_ENDPOINT=https://<your-ngrok-domain>/mcp
+PORT=8000
+```
 
-If you cloned this repo (rather than scaffolding via the Agora CLI), the steps
-above are complete as written: `bun run setup` creates the Python venv and
-installs web dependencies, then `bun run dev` brings up both services. You
-still need Agora credentials in `server/.env.local` and a public `MCP_ENDPOINT`
-tunnel before a conversation can connect.
-
-Services:
-
-- Frontend — http://localhost:3000
-- Backend + MCP server — http://localhost:8000 (including `/mcp`)
-- API docs — http://localhost:8000/docs
-
-## Deploy
-
-Deploy `web` (Next.js) and `server` (a single publicly reachable FastAPI
-process that also serves `/mcp`, so Agora cloud can reach `MCP_ENDPOINT`).
-Set `AGENT_BACKEND_URL` in the web deployment so the Next rewrites reach the
-backend.
-
-A single-process Docker image is published to
-`ghcr.io/AgoraIO-Conversational-AI/recipe-agent-mcp` on `v*` tags. It runs the
-agent backend and the FastMCP server in one process on port 8000. Expose port
-8000 publicly and point `MCP_ENDPOINT` at `<public-url>/mcp`.
-
-**Co-public caveat**: because the `/mcp` endpoint is served on the same port as
-the token endpoints, deploying this image publicly also exposes `/mcp`. For
-production use, add authentication to the MCP server or deploy behind a gateway
-that restricts `/mcp` access to Agora cloud IPs.
-
-## Environment variables
-
-Backend env file: [`server/.env.example`](server/.env.example).
-
-| Variable | Required | Default | Notes |
-| --- | :---: | :---: | --- |
-| `AGORA_APP_ID` | Yes | — | Agora Console → Project → App ID |
-| `AGORA_APP_CERTIFICATE` | Yes | — | Agora Console → Project → App Certificate |
-| `MCP_ENDPOINT` | Yes | — | **Public** URL of the `/mcp` endpoint (e.g. `https://<tunnel>/mcp`). Agora cloud calls it; cannot be `localhost`. |
-| `OPENAI_MODEL` | | `gpt-4o-mini` | Pipeline model |
-| `OPENAI_API_KEY` | | — | Optional Pipeline BYO API key; omit for Agora-managed mode |
-| `OPENAI_BASE_URL` | | OpenAI chat completions URL | Optional OpenAI-compatible Pipeline endpoint override |
-| `OPENAI_REALTIME_API_KEY` | Realtime only | — | OpenAI API key for Realtime mode |
-| `OPENAI_REALTIME_MODEL` | | `gpt-realtime` | OpenAI Realtime model |
-| `AGENT_GREETING` | | built-in | Optional opening line override |
-| `PORT` | | `8000` | Agent backend port |
-| `AGENT_BACKEND_URL` (web deploy) | Yes (deploy) | — | Required when deploying `web` |
-
-## Commands
+Then, in two terminals:
 
 ```bash
-bun run setup            # install web deps + create server/ venv
-bun run dev              # run backend (:8000, including /mcp) + web (:3000)
-
-bun run doctor           # prerequisite check (no creds needed)
-bun run doctor:local     # + .env.local + credentials + MCP_ENDPOINT checks
-
-bun run verify           # web-only gate (no Agora creds needed)
-bun run verify:local     # full local gate: backend compile + web build
-bun run clean            # remove venv and build artifacts
+ngrok http 3000 --url=<your-ngrok-domain>   # one address for web, backend and tools
+bun run dev                                 # backend on :8000, web on :3000
 ```
 
-Tests run standalone (no Agora cloud needed): `pytest` in `server/`, plus
-`bun run verify` in `web/`. CI runs them on Linux/macOS/Windows × Python 3.10 &
-3.13.
+- Dashboard: `http://localhost:3000`
+- Phones: `https://<your-ngrok-domain>/phone` — pick *Floor employee* on one and
+  *Store supervisor* on the other.
 
-## Architecture
+The speech-to-text and LLM run on Agora-managed credentials, so no other keys
+are needed. The first run downloads the detector's models (about 480 MB); they
+are kept out of Git.
 
-```
-Browser (localhost:3000)
-  │  fetch /api/*
-  ▼
-Next.js  ──rewrite──▶  Agent backend  (server/, localhost:8000)
-                          │  starts selected OpenAI path + typed mcp_servers
-                          │  also serves FastMCP at /mcp (same process)
-                          ▼
-                       Agora ConvoAI Cloud
-                          │  Pipeline: Deepgram → OpenAI LLM → MiniMax
-                          │  Realtime: OpenAI Realtime MLLM
-                          │  selected model emits tool call
-                          │  POST <MCP_ENDPOINT>   (streamable-http)
-                          ▼
-                       FastMCP server at /mcp  (same process, same port)
-                          │  returns tool result → selected model speaks it
-                          ▼
-                       Agora ConvoAI Cloud → user hears speech
-                                          → RTM transcript / metrics → web UI
-```
+Tests: `cd server && venv/bin/python -m pytest tests -q`
+(on Windows, `venv\Scripts\python.exe`).
 
-The browser only ever calls Next `/api/*`, which rewrites to the agent backend.
-The agent backend owns Agora tokens and agent lifecycle. The **FastMCP server**
-is mounted in the same process on the same port — `ngrok http 8000` exposes
-both. See [ARCHITECTURE.md](./ARCHITECTURE.md).
+## Limits
 
-## What You Get
+- **Product recognition depends on layout.** It is reliable for bottles, pens
+  and upright chocolate bars with a small gap between them, with the camera
+  close and fixed. Bars that overlap, or that are far from the camera, are
+  undercounted, and frames blurred by a moving camera are wrong until it is
+  still again.
+- **One kind of wrapped product on camera.** The reader does not reliably tell a
+  wafer chocolate bar from a biscuit packet, so biscuits are counted by hand on
+  the dashboard.
+- **Only products the camera has seen are tracked,** so a product that was never
+  put in view is never reported empty.
+- **Suppliers, stock and the budget are a mock shop** in a local SQLite file.
+- **Hinglish recognition** is Deepgram's multilingual mode and has not been
+  tested in a noisy hall.
+- **A count takes a few seconds to settle,** since each frame takes about a
+  second on a laptop processor and three must agree.
 
-- A **Next.js** web client (:3000) that drives the RTC/RTM lifecycle and only
-  ever calls `/api/*`.
-- A **FastAPI** agent backend (:8000) that owns Agora token generation and the
-  agent session lifecycle.
-- The `/api/get_config` · `/api/startAgent` · `/api/stopAgent` contract between
-  the web client and the backend (Next rewrites, no Route Handlers).
-- Selectable managed OpenAI Pipeline and OpenAI Realtime MLLM paths with typed
-  `mcp_servers` configuration and tool execution enabled.
-- A **zero-key mock** MCP server mounted in-process; default Pipeline mode runs
-  with no LLM API key and only one port to expose.
+## Credits
 
-## How It Works
+Started from Agora's
+[`recipe-agent-mcp`](https://github.com/AgoraIO-Conversational-AI/recipe-agent-mcp)
+starter, which provided the token service, the agent start/stop calls and the
+in-call screen. Everything about the shop, the calls, the triage, the camera and
+the dashboard was built for this hackathon.
 
-1. The browser calls `/api/get_config`, which Next rewrites to the backend; the
-   backend mints an Agora token from `AGORA_APP_ID` + `AGORA_APP_CERTIFICATE`.
-2. The browser joins the RTC channel, then calls `/api/startAgent` with
-   `agentMode`; the backend attaches `mcp_servers` to managed OpenAI in Pipeline
-   mode or OpenAI Realtime MLLM in Realtime mode.
-3. Pipeline mode uses managed Deepgram STT and MiniMax TTS. Realtime mode handles
-   audio directly in the MLLM.
-4. When the model emits a tool call (e.g. `get_time`), Agora cloud issues a
-   streamable-HTTP request to `MCP_ENDPOINT`. The FastMCP server (mounted at
-   `/mcp` in the same process) runs the tool and returns the result.
-5. Agora feeds the tool result back to the model. Pipeline mode uses MiniMax TTS
-   for the reply; Realtime mode speaks it directly.
-6. `/api/stopAgent` ends the session.
-
-### Replacing the mock
-
-Add tools in [`server/src/mcp_server.py`](server/src/mcp_server.py). Each
-function decorated with `@mcp.tool()` is automatically registered. The mock
-`get_time` tool needs no external credentials — replace or extend it with your
-own logic.
-
-To verify tool arguments in either mode, ask "What time is it in 12-hour
-format?" and then "Tell me in 24-hour format." The backend logs the selected
-`time_format` and the returned server time.
-
-## Repo Map
-
-- `web/` — Next.js frontend (:3000); RTC/RTM lifecycle and UI.
-- `server/` — FastAPI agent backend (:8000); Agora tokens + agent lifecycle,
-  selectable OpenAI paths with `mcp_servers`, FastMCP server mounted at `/mcp`.
-- `ARCHITECTURE.md` — system shape and component boundaries.
-- `AGENTS.md` — guide for coding agents working in this repo.
-
-## Troubleshooting
-
-| Problem | Fix |
-| --- | --- |
-| Agent starts but never responds to "what time is it?" | `MCP_ENDPOINT` is not public or the `/mcp` path is wrong. Use your ngrok URL. |
-| `doctor:local` warns about localhost | Replace the local URL with your public tunnel URL. |
-| Local calls fail under a global proxy | Configure the proxy to send `127.0.0.1` and `localhost` DIRECT. |
-
-## More Docs
-
-- [ARCHITECTURE.md](./ARCHITECTURE.md)
-- [AGENTS.md](./AGENTS.md)
-
-## License
-
-Released under the [MIT License](./LICENSE).
+MIT licensed. See [LICENSE](./LICENSE).
