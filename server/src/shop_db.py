@@ -373,7 +373,14 @@ def sales_rate(product: str) -> Dict[str, Any]:
     }
 
 
-def supplier_quotes(product: str, quantity: int) -> Dict[str, Any]:
+def supplier_quotes(product: str, quantity: Optional[int] = None) -> Dict[str, Any]:
+    """Everything needed to recommend an order, in one call: stock, sales, the
+    suggested quantity and every supplier's quote for it. On a voice call each
+    separate lookup is seconds of silence, so they are not made one by one.
+    Leave `quantity` out to quote the suggested quantity."""
+    sales = sales_rate(product)
+    if quantity is None:
+        quantity = sales["suggested_order_quantity"]
     if quantity <= 0:
         raise ShopError("BAD_QUANTITY", "Quantity must be more than zero.")
     with _connect() as conn:
@@ -405,6 +412,10 @@ def supplier_quotes(product: str, quantity: int) -> Dict[str, Any]:
     return {
         "ok": True,
         "product": row["name"],
+        "on_shelf": row["shelf_qty"],
+        "in_back_room": row["backroom_qty"],
+        "sold_per_day": sales["sold_per_day"],
+        "suggested_order_quantity": sales["suggested_order_quantity"],
         "quantity": quantity,
         "budget_remaining": budget,
         "quotes": quotes,

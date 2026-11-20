@@ -90,3 +90,21 @@ def test_tool_call_through_mcp_returns_json(shop):
     result = json.loads(content[0].text)
     assert result["product"] == "cola can"
     assert result["suggested_order_quantity"] == 120
+
+
+def test_one_call_gives_everything_for_a_recommendation(shop):
+    brief = shop.supplier_quotes("chocolate bar")
+    assert brief["quantity"] == brief["suggested_order_quantity"] == 120
+    assert (brief["on_shelf"], brief["in_back_room"], brief["sold_per_day"]) == (5, 0, 36)
+    assert brief["cheapest_that_can_fill"] == "Sri Lakshmi Traders"   # the cheapest only has 48
+    assert brief["budget_remaining"] == 6000
+    # A different amount can still be quoted when the supervisor asks.
+    assert shop.supplier_quotes("chocolate bar", 48)["cheapest_that_can_fill"] == "Bharat Wholesale"
+
+
+def test_agents_are_told_to_act_not_announce():
+    import prompts
+
+    for role in ("supervisor", "employee"):
+        assert "Never end your turn on a promise" in prompts.prompt_for(role)
+        assert len(prompts.fillers_for(role)) >= 3

@@ -94,9 +94,12 @@ def get_sales_rate(product: str) -> Dict[str, Any]:
 
 
 @shop_tool("Compared supplier quotes")
-def get_supplier_quotes(product: str, quantity: int) -> Dict[str, Any]:
-    """Price, delivery time and availability from every supplier for a given
-    quantity of a product. Call again whenever the quantity changes."""
+def get_supplier_quotes(product: str, quantity: Optional[int] = None) -> Dict[str, Any]:
+    """Everything needed to recommend an order, in one call: shelf and back-room
+    stock, how fast the product sells, the suggested order quantity, the budget,
+    and price, delivery time and availability from every supplier. Leave
+    quantity out to quote the suggested quantity; pass it when the supervisor
+    asks for a different amount."""
     return shop_db.supplier_quotes(product, quantity)
 
 

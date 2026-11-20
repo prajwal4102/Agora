@@ -23,12 +23,26 @@ from agora_agent.agentkit.vendors import (
     OpenAIRealtime,
 )
 from mcp_config import build_mcp_servers
-from prompts import greeting_for, prompt_for
+from prompts import fillers_for, greeting_for, prompt_for
 
 logger = logging.getLogger("uvicorn.error")
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_MURF_BASE_URL = "wss://global.api.murf.ai/v1/speech/stream-input"
+# If the agent has said nothing for this long while it works, Agora speaks a
+# short filler phrase so the pause does not sound like a dropped call.
+FILLER_AFTER_MS = int(os.getenv("FILLER_AFTER_MS", "1200"))
+
+
+def filler_words(role: str) -> Dict[str, Any]:
+    return {
+        "enable": True,
+        "trigger": {"mode": "fixed_time", "fixed_time_config": {"response_wait_ms": FILLER_AFTER_MS}},
+        "content": {
+            "mode": "static",
+            "static_config": {"phrases": fillers_for(role), "selection_rule": "shuffle"},
+        },
+    }
 AgentMode = Literal["pipeline", "realtime"]
 
 
@@ -136,7 +150,13 @@ class Agent:
                 "enable_error_message": True,
                 "enable_metrics": True,
             },
-            "llm": {"greeting_message": opening},
+            # The instructions are sent from here as well as saved in Studio, so
+            # a fix in prompts.py takes effect without editing the console.
+            "llm": {
+                "greeting_message": opening,
+                "system_messages": [{"role": "system", "content": prompt_for(role)}],
+            },
+            "filler_words": filler_words(role),
         }
         auth = {"additional_headers": {"Authorization": f"agora token={token}"}}
         logger.info("Starting Studio agent role=%s pipeline_id=%s channel=%s", role, pipeline_id, channel_name)
@@ -200,6 +220,7 @@ class Agent:
                 max_history=50,
                 advanced_features={"enable_rtm": not for_phone},
                 parameters=parameters,
+                filler_words=filler_words(role),
                 turn_detection={
                     "config": {
                         "speech_threshold": 0.5,
@@ -270,6 +291,7 @@ class Agent:
             "max_history": 50,
             "advanced_features": {"enable_rtm": True},
             "parameters": parameters,
+            "filler_words": filler_words(role),
         }
         if agent_mode == "pipeline":
             agent_options["turn_detection"] = {
@@ -375,8 +397,12 @@ class Agent:
 
         studio_auth = self._studio_auth.pop(agent_id, None)
         if studio_auth is not None:
-            await self.client.agents.stop(self.app_id, agent_id, request_options=studio_auth)
-            logger.info("Stopped Studio agent agent_id=%s", agent_id)
+            try:
+                await self.client.agents.stop(self.app_id, agent_id, request_options=studio_auth)
+                logger.info("Stopped Studio agent agent_id=%s", agent_id)
+            except Exception:
+                # Usually it has already left by itself after the caller hung up.
+                logger.info("Studio agent was already stopping agent_id=%s", agent_id)
             return
 
         session = self._sessions.pop(agent_id, None)
