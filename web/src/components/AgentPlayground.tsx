@@ -335,23 +335,52 @@ function Stage({
 	const boxRef = useRef<HTMLDivElement | null>(null);
 	const drag = useRef<{ x: number; y: number } | null>(null);
 	const follow = useRef(true);
+	const lastManual = useRef(0); // when the viewer last moved the canvas by hand
 	const [pan, setPan] = useState({ x: 0, y: 0 });
 	const [dragging, setDragging] = useState(false);
+
+	// Where the canvas must sit for the newest step to be fully on screen: the
+	// newest step rests a little above the bottom edge, and older steps move up
+	// and out of view. A short trace simply sits at the top.
+	const latestY = useCallback(
+		(el: HTMLDivElement) => Math.min(12, el.clientHeight - (followY + 56) * zoom),
+		[followY, zoom],
+	);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: recentre only when asked to
 	useEffect(() => {
 		const el = boxRef.current;
 		if (!el) return;
 		follow.current = true;
-		setPan({ x: (el.clientWidth - STAGE_W * zoom) / 2, y: 12 });
+		setPan({ x: (el.clientWidth - STAGE_W * zoom) / 2, y: latestY(el) });
 	}, [resetSignal, zoom]);
 
+	// Follow the action. Scrolling or dragging to look back pauses following,
+	// but only briefly: a new step a few seconds later brings the view back, so
+	// the latest step is never left off screen during a demo.
 	useEffect(() => {
 		const el = boxRef.current;
-		if (!el || !follow.current || !followY) return;
-		const desired = el.clientHeight - (followY + 40) * zoom;
-		setPan((p) => (desired < p.y ? { ...p, y: desired } : p));
-	}, [followY, zoom]);
+		if (!el) return;
+		if (!follow.current && Date.now() - lastManual.current > 4000) follow.current = true;
+		if (!follow.current) return;
+		const y = latestY(el);
+		setPan((p) => (p.y === y ? p : { ...p, y }));
+	}, [latestY]);
+
+	// The panel itself changing size (window resized, camera panel opening)
+	// must not leave the newest step below the fold either.
+	useEffect(() => {
+		const el = boxRef.current;
+		if (!el) return;
+		const observer = new ResizeObserver(() => {
+			setPan((p) => ({
+				x: (el.clientWidth - STAGE_W * zoom) / 2,
+				y: follow.current ? latestY(el) : p.y,
+			}));
+		});
+		observer.observe(el);
+		return () => observer.disconnect();
+	}, [latestY, zoom]);
 
 	useEffect(() => {
 		const el = boxRef.current;
@@ -363,6 +392,7 @@ function Stage({
 				return;
 			}
 			follow.current = false;
+			lastManual.current = Date.now();
 			setPan((p) => {
 				const minY = Math.min(12, el.clientHeight - stageH * zoom - 12);
 				return { ...p, y: Math.max(Math.min(p.y - e.deltaY, 12), minY) };
@@ -380,11 +410,14 @@ function Stage({
 			onMouseDown={(e) => {
 				e.preventDefault();
 				follow.current = false;
+				lastManual.current = Date.now();
 				drag.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
 				setDragging(true);
 			}}
 			onMouseMove={(e) => {
-				if (drag.current) setPan({ x: e.clientX - drag.current.x, y: e.clientY - drag.current.y });
+				if (!drag.current) return;
+				lastManual.current = Date.now();
+				setPan({ x: e.clientX - drag.current.x, y: e.clientY - drag.current.y });
 			}}
 			onMouseUp={() => {
 				drag.current = null;
@@ -397,7 +430,13 @@ function Stage({
 		>
 			<div
 				className="absolute"
-				style={{ width: STAGE_W, height: stageH, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "0 0" }}
+				style={{
+					width: STAGE_W,
+					height: stageH,
+					transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+					transformOrigin: "0 0",
+					transition: dragging ? "none" : "transform 480ms cubic-bezier(0.22, 1, 0.36, 1)",
+				}}
 			>
 				<svg width={STAGE_W} height={stageH} viewBox={`0 0 ${STAGE_W} ${stageH}`} className="absolute inset-0" aria-hidden>
 					<defs>
@@ -701,12 +740,25 @@ export function AgentPlayground({
 	const [, setTick] = useState(0);
 	const frameRef = useRef<HTMLDivElement | null>(null);
 
-	const bumpZoom = useCallback((delta: number) => setZoom((z) => Math.min(1.8, Math.max(0.45, +(z + delta).toFixed(2)))), []);
+	const userZoomed = useRef(false);
+	const bumpZoom = useCallback((delta: number) => {
+		userZoomed.current = true; // the viewer chose a size: stop fitting automatically
+		setZoom((z) => Math.min(1.8, Math.max(0.45, +(z + delta).toFixed(2))));
+	}, []);
 
-	// Fit the 760-wide stage to the panel the first time it is measured.
+	// Fit the 760-wide stage to the panel, and re-fit when the panel changes size
+	// (a different screen, a projector, the window being resized).
 	useEffect(() => {
 		const el = frameRef.current;
-		if (el) setZoom(Math.min(1.15, Math.max(0.55, +(el.clientWidth / (STAGE_W + 24)).toFixed(2))));
+		if (!el) return;
+		const fit = () => {
+			if (userZoomed.current) return;
+			setZoom(Math.min(1.15, Math.max(0.45, +(el.clientWidth / (STAGE_W + 24)).toFixed(2))));
+		};
+		fit();
+		const observer = new ResizeObserver(fit);
+		observer.observe(el);
+		return () => observer.disconnect();
 	}, []);
 
 	const apply = useCallback(
@@ -867,6 +919,7 @@ export function AgentPlayground({
 
 	const lastGroup = groups[groups.length - 1];
 	const anyActive = !!lastGroup && (now - lastGroup.at < ACTIVE_MS || lastGroup.tools.some((tool) => now - tool.at < ACTIVE_MS));
+	// Bottom edge of the newest step, including its tool circles and result line.
 	const followY = groups.length ? tops[tops.length - 1] + blockH(lastGroup) : 0;
 
 	return (
@@ -902,7 +955,17 @@ export function AgentPlayground({
 					<button type="button" aria-label="Zoom out" onClick={() => bumpZoom(-0.1)} className="grid h-6 w-6 place-items-center rounded-md border border-white/10 hover:text-white">
 						<Minus size={12} />
 					</button>
-					<button type="button" onClick={() => setResetSignal((s) => s + 1)} className="rounded-md border border-white/10 px-2 py-0.5 text-[10.5px] tabular-nums hover:text-white" title="Recentre">
+					<button
+						type="button"
+						onClick={() => {
+							userZoomed.current = false;
+							const el = frameRef.current;
+							if (el) setZoom(Math.min(1.15, Math.max(0.45, +(el.clientWidth / (STAGE_W + 24)).toFixed(2))));
+							setResetSignal((s) => s + 1);
+						}}
+						className="rounded-md border border-white/10 px-2 py-0.5 text-[10.5px] tabular-nums hover:text-white"
+						title="Fit to the panel and jump to the latest step"
+					>
 						{Math.round(zoom * 100)}%
 					</button>
 					<button type="button" aria-label="Zoom in" onClick={() => bumpZoom(0.1)} className="grid h-6 w-6 place-items-center rounded-md border border-white/10 hover:text-white">

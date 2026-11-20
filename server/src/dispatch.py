@@ -56,6 +56,8 @@ def init() -> None:
 
 
 def reset() -> None:
+    global current_role
+    current_role = "supervisor"
     with _lock, _connect() as conn:
         conn.execute("DROP TABLE IF EXISTS calls")
         conn.executescript(SCHEMA)
