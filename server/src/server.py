@@ -78,7 +78,8 @@ async def _dial_real_phone(call: Dict[str, Any], to_number: str) -> None:
             {"call_id": call_id, "error": str(exc)[:300]},
         )
         return  # the call stays 'ringing', so the web phone page still rings
-    shop_db.log_event("call", f"Dialling the {call['role']}'s mobile", {"call_id": call_id})
+    shop_db.log_event("call", f"Dialling the {call['role']}'s mobile", {"call_id": call_id},
+                      agent="dispatcher", to=dispatch.VOICE_AGENT[call["role"]])
 
     def on_state(state: str, reason: Any) -> None:
         dispatch.set_call_status(call_id, "answered" if state == "answered" else "ended")
@@ -243,7 +244,8 @@ async def start_agent(request: StartAgentRequest):
             role, greeting = call["role"], call["greeting"]
             dispatch.set_call_status(request.callId, "answered")
         else:
-            shop_db.log_event("call", f"The {role} called in")
+            dispatch.current_role = role
+            shop_db.log_event("call", f"The {role} called in", agent=role, to=dispatch.VOICE_AGENT[role])
 
         result = await agent.start(
             channel_name=request.channelName,

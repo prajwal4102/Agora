@@ -60,3 +60,25 @@ def test_stepping_the_shelf_applies_to_the_current_count(shop, dispatch):
     assert result["on_shelf"] == 4  # 9 on the shelf, five removed
     assert result["action"] == "call_supervisor"
     assert dispatch.adjust_shelf("cola can", -99)["on_shelf"] == 0
+
+
+def test_events_say_which_part_of_the_system_acted(shop, dispatch):
+    call = dispatch.update_shelf("cola can", 2, source="camera")
+    trail = [(e["detail"].get("agent"), e["detail"].get("to")) for e in shop.list_events()]
+    assert trail == [
+        ("shelf_watcher", "dispatcher"),        # the count came in
+        ("dispatcher", "shop_tools"),           # it is low
+        ("dispatcher", "procurement_agent"),    # back room empty: reorder
+        ("dispatcher", "procurement_agent"),    # calling the supervisor
+    ]
+    dispatch.set_call_status(call["call_id"], "answered")
+    assert shop.list_events()[-1]["detail"]["agent"] == "supervisor"
+    assert dispatch.current_role == "supervisor"
+
+    import json
+
+    import mcp_server
+
+    json.loads(mcp_server.propose_order(product="cola can", supplier="Sri Lakshmi Traders", quantity=72))
+    last = shop.list_events()[-1]["detail"]
+    assert (last["agent"], last["to"]) == ("procurement_agent", "order_gate")

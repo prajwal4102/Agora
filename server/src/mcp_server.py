@@ -58,8 +58,13 @@ def shop_tool(title: str) -> Callable:
                 result = exc.to_dict()
             except Exception as exc:  # keep the call alive; the model apologises
                 result = {"ok": False, "error": "TOOL_FAILED", "message": str(exc)}
+            # The voice agent on the line made this call. Purchases go through
+            # the order gate; everything else is a lookup in the shop tools.
+            gated = fn.__name__ in ("propose_order", "confirm_order")
             shop_db.log_event(
-                "tool", title, {"tool": fn.__name__, "args": kwargs, "result": result}
+                "tool", title, {"tool": fn.__name__, "args": kwargs, "result": result},
+                agent=dispatch.VOICE_AGENT.get(dispatch.current_role, "procurement_agent"),
+                to="order_gate" if gated else "shop_tools",
             )
             print(f"[MCP TOOL] {fn.__name__} {kwargs} -> ok={result.get('ok')}", flush=True)
             return json.dumps(result, ensure_ascii=False)

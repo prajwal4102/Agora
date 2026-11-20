@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { AgentPlayground } from "@/components/AgentPlayground";
 import { CameraPanel } from "@/components/CameraPanel";
 import {
 	type ShelfProduct,
@@ -33,6 +34,7 @@ export default function Dashboard() {
 	const [state, setState] = useState<ShopState | null>(null);
 	const [events, setEvents] = useState<ShopEvent[]>([]);
 	const [offline, setOffline] = useState(false);
+	const [showLog, setShowLog] = useState(false);
 	const lastEventId = useRef(0);
 
 	const refreshing = useRef(false);
@@ -113,7 +115,7 @@ export default function Dashboard() {
 				</div>
 			</header>
 
-			<div className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,0.8fr)]">
+			<div className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)_minmax(0,0.7fr)]">
 				<section className="flex min-h-0 flex-col gap-3 overflow-y-auto">
 					<SectionTitle icon={<ScanLine className="h-4 w-4" aria-hidden />}>Shelf</SectionTitle>
 					<CameraPanel />
@@ -123,8 +125,17 @@ export default function Dashboard() {
 				</section>
 
 				<section className="flex min-h-0 flex-col gap-3">
-					<SectionTitle icon={<Bot className="h-4 w-4" aria-hidden />}>What the agent is doing</SectionTitle>
-					<Trail events={events} />
+					<div className="flex shrink-0 items-center justify-between">
+						<SectionTitle icon={<Bot className="h-4 w-4" aria-hidden />}>Agent playground</SectionTitle>
+						<button
+							type="button"
+							onClick={() => setShowLog((value) => !value)}
+							className="text-[11px] text-muted-foreground underline-offset-4 hover:underline"
+						>
+							{showLog ? "Show playground" : "Show raw log"}
+						</button>
+					</div>
+					{showLog ? <Trail events={events} /> : <AgentPlayground events={events} summarise={toolSummary} />}
 				</section>
 
 				<section className="flex min-h-0 flex-col gap-3 overflow-y-auto">

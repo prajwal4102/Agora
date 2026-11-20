@@ -217,7 +217,21 @@ def init_db(reset: bool = False) -> None:
 # --------------------------------------------------------------------------- #
 # Event log (read by the dashboard)
 # --------------------------------------------------------------------------- #
-def log_event(kind: str, title: str, detail: Optional[Dict[str, Any]] = None) -> None:
+def log_event(
+    kind: str,
+    title: str,
+    detail: Optional[Dict[str, Any]] = None,
+    agent: Optional[str] = None,
+    to: Optional[str] = None,
+) -> None:
+    """Record something that happened. `agent` is the part of the system that
+    acted and `to` is who it addressed (see AGENTS in dispatch.py); the
+    playground draws the hand-offs between them from these."""
+    detail = {**(detail or {})}
+    if agent:
+        detail["agent"] = agent
+    if to:
+        detail["to"] = to
     with _lock, _connect() as conn:
         conn.execute(
             "INSERT INTO events (ts, kind, title, detail) VALUES (?,?,?,?)",

@@ -15,6 +15,21 @@ from shop_db import ShopError, _connect, _lock, find_product, log_event
 
 RING_TIMEOUT_SECONDS = 45
 
+# The parts of the system, as the playground shows them. Only the two voice
+# agents are language models; the rest are vision models and plain rules, and
+# are labelled as such on screen.
+#   shelf_watcher      camera: detector + reader, steady counts
+#   dispatcher         triage rules: who to call and why, the call queue
+#   floor_agent        voice agent for the employee (Hinglish)
+#   procurement_agent  voice agent for the supervisor (English)
+#   order_gate         propose-then-confirm rule on purchases
+#   shop_tools         stock, sales, supplier and budget lookups over MCP
+#   employee, supervisor   the two people
+VOICE_AGENT = {"employee": "floor_agent", "supervisor": "procurement_agent"}
+
+# Who the voice agent is talking to right now; tool calls are attributed to it.
+current_role = "supervisor"
+
 # Set by the server: called with each newly placed call so it can dial a real
 # phone when that is switched on. Left as None, calls only ring the web page.
 on_call_placed = None
@@ -78,7 +93,8 @@ def place_call(role: str, product: Optional[str], reason: str, greeting: str) ->
             (role, product_id, reason, greeting, time.time()),
         )
         call_id = cur.lastrowid
-    log_event("call", f"Calling the {role}", {"call_id": call_id, "product": product, "reason": reason})
+    log_event("call", f"Calling the {role}", {"call_id": call_id, "product": product, "reason": reason},
+              agent="dispatcher", to=VOICE_AGENT[role])
     call = {"call_id": call_id, "role": role, "product": product, "reason": reason}
     if on_call_placed is not None:
         on_call_placed({**call, "greeting": greeting})
@@ -121,7 +137,11 @@ def set_call_status(call_id: int, status: str) -> Optional[Dict[str, Any]]:
             "ended": f"Call with the {call['role']} ended",
             "declined": f"The {call['role']} declined the call",
         }
-        log_event("call", titles.get(status, f"Call {status}"), {"call_id": call_id})
+        if status == "answered":
+            global current_role
+            current_role = call["role"]
+        log_event("call", titles.get(status, f"Call {status}"), {"call_id": call_id},
+                  agent=call["role"], to=VOICE_AGENT[call["role"]])
     return call
 
 
@@ -194,7 +214,8 @@ def report_shortage(product: str, found_quantity: int = 0) -> Dict[str, Any]:
             (time.time(), prod["id"]),
         )
     log_event("stock", f"Back room count corrected for {prod['name']}",
-              {"product": prod["name"], "expected": prod["backroom_qty"], "found": found})
+              {"product": prod["name"], "expected": prod["backroom_qty"], "found": found},
+              agent="floor_agent", to="dispatcher")
     if found > 0:
         return {"ok": True, "product": prod["name"], "in_back_room_now": found,
                 "escalated_to_supervisor": False,
@@ -220,7 +241,8 @@ def update_shelf(product: str, quantity: int, source: str = "manual") -> Dict[st
         conn.execute("UPDATE products SET shelf_qty=? WHERE id=?", (quantity, prod["id"]))
     if changed:
         log_event("shelf", f"Shelf count: {quantity} {prod['name']}",
-                  {"product": prod["name"], "count": quantity, "was": prod["shelf_qty"], "source": source})
+                  {"product": prod["name"], "count": quantity, "was": prod["shelf_qty"], "source": source},
+                  agent="shelf_watcher", to="dispatcher")
     if source == "camera" and quantity > prod["shelf_qty"]:
         _camera_saw_restock(prod, quantity)
     action = triage(prod["name"]) if quantity <= prod["shelf_threshold"] else {"action": "none"}
@@ -256,10 +278,12 @@ def _camera_saw_restock(prod: Any, quantity: int) -> None:
                 conn.execute("UPDATE orders SET status='delivered' WHERE id=?", (order["id"],))
     if task:
         log_event("decision", f"Camera confirms the {prod['name']} shelf was refilled",
-                  {"product": prod["name"], "on_shelf": quantity, "added": added})
+                  {"product": prod["name"], "on_shelf": quantity, "added": added},
+                  agent="shelf_watcher", to="dispatcher")
     elif order:
         log_event("decision", f"Camera confirms order #{order['id']} arrived: {prod['name']} is back on the shelf",
-                  {"product": prod["name"], "on_shelf": quantity, "order_number": order["id"]})
+                  {"product": prod["name"], "on_shelf": quantity, "order_number": order["id"]},
+                  agent="shelf_watcher", to="order_gate")
 
 
 def adjust_shelf(product: str, delta: int, source: str = "manual") -> Dict[str, Any]:
@@ -296,10 +320,12 @@ def triage(product: str) -> Dict[str, Any]:
             )
     name, unit = prod["name"], prod["unit"]
     log_event("decision", f"{name} is low: {prod['shelf_qty']} left on the shelf",
-              {"product": name, "on_shelf": prod["shelf_qty"], "threshold": prod["shelf_threshold"]})
+              {"product": name, "on_shelf": prod["shelf_qty"], "threshold": prod["shelf_threshold"]},
+              agent="dispatcher", to="shop_tools")
     if refill_qty > 0:
         log_event("decision", f"Back room has {prod['backroom_qty']}. Sending the employee to refill.",
-                  {"product": name, "in_back_room": prod["backroom_qty"], "bring": refill_qty})
+                  {"product": name, "in_back_room": prod["backroom_qty"], "bring": refill_qty},
+                  agent="dispatcher", to="floor_agent")
         call = place_call(
             "employee", name, f"refill {refill_qty} {name} from the back room",
             prompts.employee_alert_greeting(name, unit, prod["shelf_qty"], refill_qty),
@@ -307,10 +333,10 @@ def triage(product: str) -> Dict[str, Any]:
         return {"action": "call_employee", "bring_quantity": refill_qty, **call}
     if on_order:
         log_event("decision", f"Back room is empty but {name} is already on order. No call needed.",
-                  {"product": name})
+                  {"product": name}, agent="dispatcher", to="order_gate")
         return {"action": "none", "why": "already on order"}
     log_event("decision", "Back room is empty. Calling the supervisor about a reorder.",
-              {"product": name, "in_back_room": 0})
+              {"product": name, "in_back_room": 0}, agent="dispatcher", to="procurement_agent")
     call = place_call(
         "supervisor", name, f"{name} is low on the shelf and the back room is empty",
         prompts.supervisor_alert_greeting(name, prod["shelf_qty"]),
