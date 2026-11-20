@@ -41,6 +41,8 @@ FLAT_SHAPES = ("banner", "wrapper", "packet")
 FIND_FLOOR = float(os.getenv("VISION_FIND_CONFIDENCE", "0.03"))
 # How sure the second step must be before an object counts as a wrapped product.
 READ_FLOOR = float(os.getenv("VISION_READ_CONFIDENCE", "0.8"))
+# How sure the reader must be to overrule a shape the detector accepted.
+READ_OVERRULES = float(os.getenv("VISION_READ_OVERRULES", "0.85"))
 # A box mostly covered by other boxes of the same product is a second look at
 # the same items (often one box swallowing two neighbours), not another item.
 COVERED = float(os.getenv("VISION_COVERED", "0.6"))
@@ -109,13 +111,14 @@ class StableCounts:
         just changed, with their new count."""
         changed: Dict[str, int] = {}
         for product, count in counts.items():
-            if count > 0:
-                self._tracked.add(product)
-            if product not in self._tracked:
-                continue  # never seen on this shelf: do not report it as empty
             recent = self._recent.setdefault(product, deque(maxlen=self.frames))
             recent.append(count)
             steady = len(recent) == self.frames and len(set(recent)) == 1
+            if steady and count > 0:
+                # Seen steadily, not for one blurred frame: now it is tracked.
+                self._tracked.add(product)
+            if product not in self._tracked:
+                continue  # never properly seen on this shelf: do not report it as empty
             if steady and self._stable.get(product) != count:
                 self._stable[product] = count
                 changed[product] = count
@@ -137,6 +140,15 @@ Found = Tuple[str, float, Tuple[int, int, int, int]]  # product, confidence, box
 
 def _area(box: Tuple[int, int, int, int]) -> int:
     return max(0, box[2] - box[0]) * max(0, box[3] - box[1])
+
+
+def _touches_edge(box: Tuple[int, int, int, int], width: int, height: int) -> bool:
+    """Is this box cut off by the edge of the picture?"""
+    margin = max(2, int(0.01 * min(width, height)))
+    return (
+        box[0] <= margin or box[1] <= margin
+        or box[2] >= width - margin or box[3] >= height - margin
+    )
 
 
 def _without_repeats(found: List[Found]) -> List[Found]:
@@ -299,20 +311,31 @@ class ShelfVision:
             }
             # Step one: keep what the detector is sure of by shape, and set
             # everything else aside for the reader.
-            found: List[Tuple[str, float, Tuple[int, int, int, int]]] = []
-            unsure: List[Tuple[int, int, int, int]] = []
-            for box in result.boxes:
-                index = int(box.cls[0])
-                corners = tuple(int(v) for v in box.xyxy[0])
-                product = self._class_product[index]
-                if product != FLAT and float(box.conf[0]) >= self._class_floor[index]:
-                    found.append((product, float(box.conf[0]), corners))
-                else:
-                    unsure.append(corners)
-            # Step two: the reader names each unsure object, or rejects it.
-            for corners, (product, confidence) in zip(unsure, self._read(frame, unsure)):
-                if product is not None and confidence >= READ_FLOOR:
-                    found.append((product, confidence, corners))
+            # Every object the detector found, faint or not, with what the
+            # reader makes of it.
+            candidates = [
+                (self._class_product[int(box.cls[0])], float(box.conf[0]),
+                 self._class_floor[int(box.cls[0])], tuple(int(v) for v in box.xyxy[0]))
+                for box in result.boxes
+            ]
+            readings = self._read(frame, [corners for _, _, _, corners in candidates])
+            found: List[Found] = []
+            for (shape, confidence, floor, corners), (read_as, read_confidence) in zip(candidates, readings):
+                is_shape = shape != FLAT and confidence >= floor
+                if read_as is not None and read_confidence >= READ_FLOOR and (
+                    not is_shape or read_confidence >= READ_OVERRULES
+                ):
+                    # The reader recognises a wrapped product. That settles an
+                    # object with no confident shape, and overrules a shape
+                    # label when the reader is very sure: a blurred chocolate
+                    # bar is a confident "pen" to the detector.
+                    found.append((read_as, read_confidence, corners))
+                elif is_shape and confidence >= CONFIDENCE:
+                    found.append((shape, confidence, corners))
+                elif is_shape and not _touches_edge(corners, width, height):
+                    # A faint shape, allowed by a low floor such as pens have.
+                    # At the edge of the picture these are cables and shadows.
+                    found.append((shape, confidence, corners))
             boxes: List[Dict[str, Any]] = []
             for product, confidence, (x1, y1, x2, y2) in _without_repeats(found):
                 boxes.append({

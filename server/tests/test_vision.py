@@ -114,3 +114,22 @@ def test_overlap_between_different_products_is_kept():
     bottle = ("water bottle", 0.9, (100, 0, 200, 300))
     bar_in_front = ("chocolate bar", 0.99, (110, 50, 190, 290))
     assert len(_without_repeats([bottle, bar_in_front])) == 2
+
+
+def test_a_box_cut_off_by_the_picture_edge_is_recognised():
+    from vision import _touches_edge
+
+    assert _touches_edge((945, 680, 1162, 719), 1280, 720)      # the cable at the bottom
+    assert not _touches_edge((375, 118, 494, 614), 1280, 720)   # a bar well inside the picture
+
+
+def test_one_stray_sighting_does_not_start_tracking_a_product():
+    from vision import StableCounts
+
+    counts = StableCounts(frames=3)
+    # A blurred frame makes a chocolate bar look like a pen, once.
+    counts.update({"chocolate bar": 4, "pen": 1})
+    for _ in range(5):
+        changed = counts.update({"chocolate bar": 5, "pen": 0})
+    assert "pen" not in counts.tracked and "pen" not in counts.stable
+    assert counts.stable == {"chocolate bar": 5}
