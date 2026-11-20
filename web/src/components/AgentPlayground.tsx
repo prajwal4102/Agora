@@ -167,9 +167,9 @@ function productOf(event: ShopEvent): string | null {
 
 function colourOf(event: ShopEvent, actor: AgentKey): string {
 	const title = event.title.toLowerCase();
-	if (title.includes("confirms") || title.includes("answered")) return GOOD;
+	if (title.includes("confirms") || title.includes("answered") || title.startsWith("summary")) return GOOD;
 	if (title.includes("declined") || title.includes("missed") || title.includes("could not")) return BAD;
-	if (title.startsWith("calling") || title.startsWith("dialling")) return WAIT;
+	if (title.startsWith("calling") || title.startsWith("dialling") || title.startsWith("callback")) return WAIT;
 	return META[actor].c;
 }
 

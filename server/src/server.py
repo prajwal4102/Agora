@@ -59,8 +59,20 @@ async def _lifespan(_app):
     dispatch.on_call_placed = _on_call_placed
     # Load the shelf detector in the background so the first camera frame is fast.
     threading.Thread(target=shelf_vision.warm_up, daemon=True).start()
+    callbacks = asyncio.create_task(_callback_loop())
     async with mcp_server.mcp.session_manager.run():
         yield
+    callbacks.cancel()
+
+
+async def _callback_loop() -> None:
+    """Every few seconds, ring back anyone whose promised callback is due."""
+    while True:
+        await asyncio.sleep(3)
+        try:
+            dispatch.fire_due_callbacks()
+        except Exception:
+            logger.exception("Callback check failed")
 
 
 _loop: Optional[asyncio.AbstractEventLoop] = None

@@ -82,3 +82,53 @@ def test_events_say_which_part_of_the_system_acted(shop, dispatch):
     json.loads(mcp_server.propose_order(product="cola can", supplier="Sri Lakshmi Traders", quantity=72))
     last = shop.list_events()[-1]["detail"]
     assert (last["agent"], last["to"]) == ("procurement_agent", "order_gate")
+
+
+def test_a_promised_callback_really_rings(shop, dispatch):
+    call = dispatch.update_shelf("cola can", 2)
+    dispatch.set_call_status(call["call_id"], "answered")
+    shop.schedule_callback("cola can", 1, "decide on the cola order", role="supervisor")
+    dispatch.set_call_status(call["call_id"], "ended")
+    assert "will call back in 1 minute" in shop.list_events()[-1]["title"]
+
+    # Not due yet, and the low shelf does not make it ring early either.
+    assert dispatch.fire_due_callbacks() == []
+    assert dispatch.update_shelf("cola can", 1)["action"] == "none"
+
+    with shop._connect() as conn:
+        conn.execute("UPDATE callbacks SET due_at = due_at - 120")
+    placed = dispatch.fire_due_callbacks()
+    assert len(placed) == 1 and placed[0]["role"] == "supervisor"
+    ringing = dispatch.pending_call("supervisor")
+    assert "calling back as you asked about cola can" in ringing["greeting"]
+    assert dispatch.fire_due_callbacks() == []  # rings once, not on every check
+
+
+def test_a_callback_waits_while_that_person_is_on_a_call(shop, dispatch):
+    call = dispatch.update_shelf("cola can", 2)
+    dispatch.set_call_status(call["call_id"], "answered")
+    shop.schedule_callback("cola can", 1, "later", role="supervisor")
+    with shop._connect() as conn:
+        conn.execute("UPDATE callbacks SET due_at = due_at - 120")
+    assert dispatch.fire_due_callbacks() == []          # still talking
+    dispatch.set_call_status(call["call_id"], "ended")
+    assert len(dispatch.fire_due_callbacks()) == 1
+
+
+def test_a_call_ends_with_a_summary_of_what_was_done(shop, dispatch):
+    call = dispatch.update_shelf("cola can", 2)
+    dispatch.set_call_status(call["call_id"], "answered")
+    proposal = shop.propose_order("cola can", "Sri Lakshmi Traders", 72)
+    order = shop.confirm_order(proposal["proposal_id"], "yes")
+    dispatch.set_call_status(call["call_id"], "ended")
+    summary = shop.list_events()[-1]
+    assert summary["title"].startswith(f"Summary: order #{order['order_number']} placed, 72 cola can")
+    assert "camera will confirm" in summary["title"]
+    assert (summary["detail"]["agent"], summary["detail"]["to"]) == ("procurement_agent", "supervisor")
+
+
+def test_a_call_where_nothing_was_done_says_so(shop, dispatch):
+    call = dispatch.update_shelf("cola can", 2)
+    dispatch.set_call_status(call["call_id"], "answered")
+    dispatch.set_call_status(call["call_id"], "ended")
+    assert shop.list_events()[-1]["title"] == "Summary: no action taken"

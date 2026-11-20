@@ -32,7 +32,9 @@ shows every step on screen.
 4. Push back: "order half", "who is fastest?", "keep it under 3,000".
    It re-prices, reads the total back, and waits.
 5. Say yes. The order appears on the dashboard with its number and arrival time.
-6. Take pens off the shelf. This time the employee's phone rings, in Hinglish,
+6. Or say "not now, call me back in a minute". The call ends with a summary on
+   the dashboard, and a minute later the phone rings again.
+7. Take pens off the shelf. This time the employee's phone rings, in Hinglish,
    because pens are in the back room. Put pens back and the camera confirms the
    refill by itself.
 
@@ -63,6 +65,16 @@ shows every step on screen.
 | Shelf camera | Finds and counts products in webcam frames, locally | `server/src/vision.py` |
 | Dashboard | Shelf, live trail of the agent's steps, calls, orders | `web/src/components/Dashboard.tsx` |
 | Phone page | Rings, answers, and lets either person call in | `web/src/components/PhoneApp.tsx` |
+
+### The whole journey
+
+| Stage | What happens |
+|---|---|
+| Before | The camera count, back-room stock and open orders are known before anyone speaks; the agent opens the call with them |
+| Understand and plan | The agent says its plan in a sentence, then works through it |
+| Act | Tool calls over MCP: stock, sales, three suppliers, budget, the order |
+| Confirm | The total is read back and approved aloud; the order number and arrival time are confirmed |
+| Follow up | The call ends with a summary of what was done. A promised callback rings when due. The camera confirms the delivery or refill when the stock is back |
 
 ### The order gate
 

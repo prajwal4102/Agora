@@ -280,7 +280,7 @@ function toolSummary(detail: Record<string, unknown>): string | null {
 		case "get_order_status":
 			return `${result.count} order(s)`;
 		case "schedule_callback":
-			return `Will call back in ${result.in_hours}h`;
+			return `Will ring the ${result.will_call ?? "supervisor"} back in ${result.in_minutes} min`;
 		case "get_refill_tasks":
 			return `${result.count} open task(s)`;
 		case "complete_refill_task":

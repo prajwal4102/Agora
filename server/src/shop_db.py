@@ -91,7 +91,9 @@ CREATE TABLE IF NOT EXISTS callbacks (
     product_id INTEGER,
     due_at REAL NOT NULL,
     note TEXT NOT NULL,
-    created_at REAL NOT NULL
+    created_at REAL NOT NULL,
+    role TEXT NOT NULL DEFAULT 'supervisor',   -- who asked to be called back
+    status TEXT NOT NULL DEFAULT 'pending'     -- pending | done
 );
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -183,6 +185,12 @@ def init_db(reset: bool = False) -> None:
             ):
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.executescript(SCHEMA)
+        # A database made before callbacks could ring lacks these two columns.
+        have = {row[1] for row in conn.execute("PRAGMA table_info(callbacks)")}
+        if "role" not in have:
+            conn.execute("ALTER TABLE callbacks ADD COLUMN role TEXT NOT NULL DEFAULT 'supervisor'")
+        if "status" not in have:
+            conn.execute("ALTER TABLE callbacks ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
         if conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]:
             # An existing database: add any product the seed list has gained and
             # keep the camera descriptions current. Stock levels are left alone.
@@ -560,18 +568,23 @@ def order_status(product: Optional[str] = None) -> Dict[str, Any]:
     return {"ok": True, "orders": orders, "count": len(orders)}
 
 
-def schedule_callback(product: Optional[str], in_hours: float, note: str) -> Dict[str, Any]:
-    if in_hours <= 0 or in_hours > 24 * 14:
+def schedule_callback(
+    product: Optional[str], in_minutes: float, note: str, role: str = "supervisor"
+) -> Dict[str, Any]:
+    """Promise to ring someone back. The call is placed when it falls due (see
+    dispatch.fire_due_callbacks), so "later" is a real follow-up, not a note."""
+    if in_minutes <= 0 or in_minutes > 60 * 24 * 14:
         raise ShopError("BAD_TIME", "Pick a callback time between now and two weeks from now.")
+    text = (note or "").strip()[:200] or "Follow up"
     with _lock, _connect() as conn:
         product_id = find_product(conn, product)["id"] if product else None
-        due = time.time() + in_hours * 3600
         cur = conn.execute(
-            "INSERT INTO callbacks (product_id, due_at, note, created_at) VALUES (?,?,?,?)",
-            (product_id, due, (note or "").strip()[:200] or "Follow up", time.time()),
+            "INSERT INTO callbacks (product_id, due_at, note, created_at, role, status)"
+            " VALUES (?,?,?,?,?, 'pending')",
+            (product_id, time.time() + in_minutes * 60, text, time.time(), role),
         )
-    return {"ok": True, "callback_id": cur.lastrowid, "in_hours": in_hours,
-            "note": (note or "").strip()[:200] or "Follow up"}
+    return {"ok": True, "callback_id": cur.lastrowid, "in_minutes": in_minutes, "note": text,
+            "will_call": role}
 
 
 # --------------------------------------------------------------------------- #

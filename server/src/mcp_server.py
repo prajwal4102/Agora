@@ -130,10 +130,11 @@ def get_order_status(product: Optional[str] = None) -> Dict[str, Any]:
 
 
 @shop_tool("Scheduled a callback")
-def schedule_callback(in_hours: float, note: str, product: Optional[str] = None) -> Dict[str, Any]:
-    """Schedule a reminder call to the supervisor, for when they want to decide
-    later. in_hours is how many hours from now."""
-    return shop_db.schedule_callback(product, in_hours, note)
+def schedule_callback(in_minutes: float, note: str, product: Optional[str] = None) -> Dict[str, Any]:
+    """Promise to ring this person back later, for when they want to decide
+    later or are busy. in_minutes is how many minutes from now (1 for "in a
+    minute", 60 for "in an hour"). The call really is placed when it is due."""
+    return shop_db.schedule_callback(product, in_minutes, note, role=dispatch.current_role)
 
 
 # --- Employee side: refilling the shelf from the back room ---

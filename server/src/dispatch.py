@@ -142,7 +142,79 @@ def set_call_status(call_id: int, status: str) -> Optional[Dict[str, Any]]:
             current_role = call["role"]
         log_event("call", titles.get(status, f"Call {status}"), {"call_id": call_id},
                   agent=call["role"], to=VOICE_AGENT[call["role"]])
+        if status == "ended":
+            _log_call_summary(call_id, call["role"])
     return call
+
+
+def _log_call_summary(call_id: int, role: str) -> None:
+    """When a call ends, put on record what it achieved and what happens next.
+    Built from what was actually done during the call, not from what was said."""
+    with _connect() as conn:
+        row = conn.execute("SELECT answered_at FROM calls WHERE id=?", (call_id,)).fetchone()
+        since = row["answered_at"] if row and row["answered_at"] else None
+        if since is None:
+            return  # never answered: nothing was done
+        orders = conn.execute(
+            "SELECT o.id, o.quantity, o.total, o.eta_at, p.name AS product, s.name AS supplier"
+            " FROM orders o JOIN products p ON p.id=o.product_id JOIN suppliers s ON s.id=o.supplier_id"
+            " WHERE o.status IN ('placed','delivered') AND o.placed_at >= ?", (since,),
+        ).fetchall()
+        refills = conn.execute(
+            "SELECT p.name AS product FROM refill_tasks t JOIN products p ON p.id=t.product_id"
+            " WHERE t.status='done' AND t.done_at >= ?", (since,),
+        ).fetchall()
+        callbacks = conn.execute(
+            "SELECT due_at FROM callbacks WHERE status='pending' AND created_at >= ?", (since,),
+        ).fetchall()
+    done: List[str] = []
+    for o in orders:
+        hours = max(0, round((o["eta_at"] - time.time()) / 3600))
+        done.append(
+            f"order #{o['id']} placed, {o['quantity']} {o['product']} from {o['supplier']}"
+            f" for {o['total']:.0f} rupees, arriving in about {hours} hours."
+            " The camera will confirm when it is on the shelf"
+        )
+    for r in refills:
+        done.append(f"{r['product']} shelf refilled")
+    for c in callbacks:
+        minutes = max(1, round((c["due_at"] - time.time()) / 60))
+        done.append(f"will call back in {minutes} minute{'s' if minutes != 1 else ''}")
+    summary = "; ".join(done) if done else "no action taken"
+    log_event("call", f"Summary: {summary}", {"call_id": call_id, "actions": len(done)},
+              agent=VOICE_AGENT[role], to=role)
+
+
+def fire_due_callbacks() -> List[Dict[str, Any]]:
+    """Ring back anyone whose promised callback has fallen due. Called on a
+    timer by the server. A callback waits if that person is already on a call."""
+    placed: List[Dict[str, Any]] = []
+    with _lock, _connect() as conn:
+        _expire_stale(conn)
+        due = conn.execute(
+            "SELECT c.*, p.name AS product, p.shelf_qty FROM callbacks c"
+            " LEFT JOIN products p ON p.id=c.product_id"
+            " WHERE c.status='pending' AND c.due_at <= ? ORDER BY c.due_at", (time.time(),),
+        ).fetchall()
+        ready = []
+        for row in due:
+            busy = conn.execute(
+                "SELECT 1 FROM calls WHERE role=? AND status IN ('ringing','answered')", (row["role"],)
+            ).fetchone()
+            if busy:
+                continue
+            conn.execute("UPDATE callbacks SET status='done' WHERE id=?", (row["id"],))
+            ready.append(row)
+    for row in ready:
+        role, product = row["role"], row["product"]
+        log_event("decision", f"Callback is due: ringing the {role} back",
+                  {"product": product, "note": row["note"]},
+                  agent="dispatcher", to=VOICE_AGENT[role])
+        placed.append(place_call(
+            role, product, f"callback: {row['note']}",
+            prompts.callback_greeting(role, product, row["shelf_qty"], row["note"]),
+        ))
+    return placed
 
 
 def _has_live_call(conn: Any, product_id: int) -> bool:
@@ -312,6 +384,12 @@ def triage(product: str) -> Dict[str, Any]:
         ).fetchone()
         if open_task:
             return {"action": "none", "why": "the employee already has a refill task"}
+        waiting = conn.execute(
+            "SELECT 1 FROM callbacks WHERE product_id=? AND status='pending'", (prod["id"],)
+        ).fetchone()
+        if waiting:
+            # They said "later". Do not ring again until the callback is due.
+            return {"action": "none", "why": "a callback about this product is already scheduled"}
         refill_qty = min(prod["shelf_capacity"] - prod["shelf_qty"], prod["backroom_qty"])
         if refill_qty > 0:
             conn.execute(
