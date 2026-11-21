@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Agora Agent & Token Service — MCP Recipe
+AgentsMart backend: Agora tokens, voice agents, shop, camera and MCP tools
 
 HTTP APIs:
 - GET  /get_config     -> Generate connection config
@@ -215,7 +215,7 @@ def _agora_status() -> Dict[str, Any]:
 
 # FastAPI application
 app = FastAPI(
-    title="Agora MCP Recipe Service",
+    title="AgentsMart Backend",
     version="1.0.0",
     description="Agora Conversational AI with MCP tool calling",
     lifespan=_lifespan,

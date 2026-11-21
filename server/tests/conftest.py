@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for recipe-agent-mcp server tests."""
+"""Shared pytest fixtures for AgentsMart backend tests."""
 import sys
 import os
 

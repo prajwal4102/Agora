@@ -1,54 +1,73 @@
 # Agent Development Guide
 
-For coding agents working in `recipe-agent-mcp`. This repository is the **mcp**
-recipe (`Recipe Role: mcp`) in the Agora Conversational AI recipes family.
-An OpenAI Pipeline or Realtime model emits a tool call, Agora invokes the
-FastMCP server mounted at `/mcp` in the same backend process (at `MCP_ENDPOINT`,
-which must be public), returns the result, and the model speaks it.
+For coding agents working in **AgentsMart**: voice agents for a supermarket,
+built on Agora Conversational AI and Murf Falcon. A camera counts the shelf;
+when a product runs low an orchestrator decides who must act, and a voice agent
+phones the floor employee (refill) or the supervisor (reorder). The model's
+tool calls go from Agora's cloud to the FastMCP server mounted at `/mcp` in the
+same backend process (at `MCP_ENDPOINT`, which must be public).
+
+Read [README.md](./README.md) for the product and
+[ARCHITECTURE.md](./ARCHITECTURE.md) for the running system.
 
 ## System shape
 
-- **`server/`** — Python FastAPI agent backend (:8000). Owns Agora token
-  generation, agent session lifecycle, **and** the FastMCP server mounted at
-  `/mcp` (same process, same port). SDK: `agora-agents>=2.10.0`
-  (`import agora_agent`).
-- **`web/`** — Next.js frontend (:3000), resynced from the base quickstart with
-  MCP branding.
-- Auth: Token007 from `AGORA_APP_ID` + `AGORA_APP_CERTIFICATE`. Pipeline mode is
-  Agora-managed by default and supports optional `OPENAI_API_KEY` /
-  `OPENAI_BASE_URL`; Realtime requires `OPENAI_REALTIME_API_KEY`.
+- **`server/`**: Python FastAPI backend (:8000). Owns Agora token generation,
+  agent session lifecycle, the shop database, the shelf camera, the
+  orchestrator, **and** the FastMCP server mounted at `/mcp` (same process,
+  same port). SDK: `agora-agents>=2.10.0` (`import agora_agent`).
+- **`web/`**: Next.js frontend (:3000): dashboard, agent playground, phone page.
+- **`studio/`**: prompts and greetings for the two agents saved in Agora Agent
+  Studio.
+- Auth: Token007 from `AGORA_APP_ID` + `AGORA_APP_CERTIFICATE`. Speech-to-text
+  and the LLM are Agora-managed by default; the voice needs `MURF_API_KEY`.
 
 ## Routing / ownership
 
-- UI and RTC/RTM lifecycle live in `web/`.
-- Browser-facing `/api/*` paths are Next rewrites (`web/next.config.ts`) to the
-  agent backend; do not add `web/app/api/**/route.ts` for agent/token logic.
-- Token generation and agent lifecycle live in `server/src/`.
-- MCP tool logic lives in `server/src/mcp_server.py` (mounted at `/mcp` inside
-  the same FastAPI app).
+| Concern | File |
+|---|---|
+| Counting products in camera frames | `server/src/vision.py` |
+| Who to call and when; call queue, refill tasks, callbacks | `server/src/dispatch.py` |
+| Starting and stopping Agora voice agents | `server/src/agent.py` |
+| What each agent is told; greetings; filler phrases | `server/src/prompts.py` |
+| MCP tools and per-role tool scope | `server/src/mcp_server.py` |
+| Stock, suppliers, budget, forecast, the Order Gate | `server/src/shop_db.py`, `server/src/seasons.py` |
+| HTTP routes | `server/src/server.py` |
+| UI and RTC/RTM lifecycle | `web/` |
+
+Browser-facing `/api/*` paths are Next rewrites (`web/next.config.ts`) to the
+backend; do not add `web/app/api/**/route.ts` for agent/token logic.
+
+## Naming
+
+The UI says **Orchestrator** and **Replenishment Agent**. In code the same
+things are still `dispatcher` / `dispatch.py` and the `employee` role
+(`floor_agent` in the playground). The Procurement Agent is the `supervisor`
+role. Do not rename the code keys without updating both sides.
 
 ## Supported modes
 
 - **Local:** `bun run dev` starts `server` (:8000, including `/mcp`) and `web`
-  (:3000). The web app calls `/api/*`; Next rewrites to
-  `AGENT_BACKEND_URL=http://localhost:8000`. The backend must be exposed publicly
-  (`ngrok http 8000`) so Agora cloud can reach `/mcp`.
-- **Deploy:** deploy `web` (Next) + `server` (a single publicly reachable FastAPI
-  process that also serves `/mcp`). Set `AGENT_BACKEND_URL` in the web deployment.
+  (:3000). Expose the web app with `ngrok http 3000`; Next rewrites `/api/*`
+  and `/mcp` to the backend, so one public address serves the phones, the
+  dashboard and Agora's cloud.
+- **Deploy:** deploy `web` (Next) + `server` (a single publicly reachable
+  FastAPI process that also serves `/mcp`). Set `AGENT_BACKEND_URL` in the web
+  deployment.
 
 ## Patterns
 
 - Keep the web client calling `/api/*`; hide backend placement behind Next rewrites.
 - Keep token generation and the App Certificate in `server/`.
-- Keep `server/src/mcp_server.py` free of `agora-agents` — it is a standalone
-  MCP module imported into `server.py` and mounted via `app.mount("/", ...)`.
+- Keep `server/src/mcp_server.py` free of `agora-agents`.
+- Every tool is wrapped by `shop_tool`, which enforces the caller's role. Add a
+  new tool to `TOOL_SCOPE` or it is open to both roles.
+- Purchases go through `propose_order` then `confirm_order`. Never add a path
+  that places an order without the Order Gate.
 - `MCP_ENDPOINT` is required and must be public; there is no localhost default.
-- Use typed `McpServerConfig`; omit transport to exercise the SDK's
-  `streamable_http` default.
-- `OPENAI_API_KEY` and `OPENAI_BASE_URL` are optional Pipeline BYO settings;
-  `OPENAI_REALTIME_API_KEY` is required only for Realtime mode.
-- Use `ngrok http 8000` (not 8001) — the MCP endpoint is now on the same port as
-  the token APIs.
+- After editing `server/src/prompts.py`, regenerate the matching file in
+  `studio/` from the prompt constant.
+- The backend does not hot-reload; restart it after backend changes.
 
 ## Anti-patterns
 
@@ -58,6 +77,7 @@ which must be public), returns the result, and the model speaks it.
 - Do not put `PORT` in `server/.env.example` (it would clobber the random port
   that `verify:local:fastapi` injects via `load_dotenv(override=True)`).
 - Do not reintroduce a separate `mcp/` service or `docker-entrypoint.sh`.
+- Do not commit keys, `server/.env.local`, model weights or recordings.
 
 ## Commands
 
@@ -68,6 +88,7 @@ bun run doctor
 bun run doctor:local
 bun run verify         # web-only, no creds
 bun run verify:local   # full local gate
+cd server && venv/bin/python -m pytest tests -q   # Windows: venv\Scripts\python.exe
 ```
 
 Narrower checks: `bun run verify:backend`, `bun run verify:web:proxy`.
@@ -75,9 +96,8 @@ Narrower checks: `bun run verify:backend`, `bun run verify:web:proxy`.
 ## Done criteria
 
 1. Run the narrowest relevant verification command.
-2. Web-affecting changes: `bun run verify:web` passes.
-3. Backend-affecting changes: `bun run verify:local` (or the narrower
-   `verify:backend`) passes.
+2. Web-affecting changes: the type-check and `bun run verify:web` pass.
+3. Backend-affecting changes: the backend tests pass.
 4. If you change required env vars or setup steps, update the root README, the
    relevant module README, and `server/.env.example` together.
 

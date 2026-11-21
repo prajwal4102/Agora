@@ -1,5 +1,5 @@
 """
-Agent — MCP Recipe
+AgentsMart voice agents
 
 High-level API for managing Agora Conversational AI Agents with OpenAI Pipeline
 or Realtime MCP tool calling. Agora cloud orchestrates the MCP server: the model

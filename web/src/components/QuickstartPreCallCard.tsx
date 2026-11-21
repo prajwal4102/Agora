@@ -29,7 +29,7 @@ export function QuickstartPreCallCard({
 			}}
 		>
 			<h1 className="text-[28px] font-medium leading-[1.2] text-white">
-				MCP Recipe
+				AgentsMart
 			</h1>
 			<p className="mt-[14px] text-sm font-medium leading-6 text-muted-foreground">
 				Ask &quot;what time is it?&quot; &mdash; the model calls a tool on a separate MCP

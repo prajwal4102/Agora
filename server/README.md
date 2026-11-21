@@ -1,10 +1,10 @@
-# Agora Agent Backend — MCP Recipe
+# AgentsMart backend
 
 FastAPI service that owns Agora token generation and agent session lifecycle for
-the mcp recipe. It is the service the web client reaches through the Next.js
+AgentsMart, plus the shop, the shelf camera, the orchestrator and the MCP tools. It is the service the web client reaches through the Next.js
 `/api/*` rewrite proxy (port 8000).
 
-## What's different from the base quickstart
+## How tool calls reach this service
 
 The SDK attaches typed `mcp_servers` configuration to managed `OpenAI` in the
 default Pipeline mode or to `OpenAIRealtime` in Realtime mode. When the model

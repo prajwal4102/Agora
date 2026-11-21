@@ -1,79 +1,129 @@
-# Architecture — MCP Recipe
+# Architecture: AgentsMart
 
-Two processes. The browser talks only to Next.js `/api/*`, which rewrites to
-the agent backend. The agent backend owns Agora tokens, agent lifecycle, **and**
-the FastMCP server mounted at `/mcp` — all in one process on one port.
+AgentsMart watches a supermarket shelf, decides who must act when a product
+runs low, and has a voice agent phone that person. This file describes the
+running system. The product story and screenshots are in the
+[README](./README.md).
+
+## The five parts
+
+| Part | Kind | Job | Code |
+|---|---|---|---|
+| Shelf Watcher | Vision, local | Counts each product in webcam frames | `server/src/vision.py` |
+| Orchestrator | Fixed rules | Decides who must act and when; queues calls, refill tasks and callbacks | `server/src/dispatch.py` |
+| Replenishment Agent | Voice agent (LLM) | Calls the floor employee in Hinglish to refill from the back room | `server/src/agent.py`, `server/src/prompts.py` |
+| Procurement Agent | Voice agent (LLM) | Calls the supervisor in English with a forecast and supplier quotes; places the order | `server/src/agent.py`, `server/src/prompts.py` |
+| Order Gate | Fixed rules | Refuses any purchase that is unapproved, unheard, stale, over budget, short at the supplier, re-priced or duplicated | `server/src/shop_db.py` |
+
+The two voice agents run in Agora's cloud. Everything else runs in one backend
+process.
 
 ## Request flow
 
 ```
-Browser
-  │  GET /api/get_config            → token + channel/UIDs
-  │  POST /api/startAgent           → start agent session
+Webcam (browser)
+  │  POST /api/vision/frame           one frame about every second
   ▼
-Next.js  (rewrites /api/* → AGENT_BACKEND_URL)
+Next.js (web/, :3000)                 rewrites /api/* and /mcp to the backend
   ▼
-Agent backend (server/, :8000)
-  │  builds selected OpenAI path with typed McpServerConfig
-  │  also serves FastMCP at /mcp (same uvicorn, same port)
+Backend (server/, :8000)              FastAPI + FastMCP in one process
+  │  Shelf Watcher   YOLO-World finds objects, CLIP names wrapped products;
+  │                  a count is believed after three matching frames
+  │  Orchestrator    low shelf? already handled? back room has stock?
+  │                  → refill task + ring the employee, or ring the supervisor
+  │  agent.py        starts an Agora voice agent briefed for that person
   ▼
-Agora ConvoAI Cloud
-  │  Pipeline: Deepgram STT → managed OpenAI LLM → MiniMax TTS
-  │  Realtime: OpenAI Realtime MLLM
-  │  selected model emits get_time tool call
-  │  POST <MCP_ENDPOINT>   (streamable-http transport)
+Agora Conversational AI Engine (cloud)
+  │  Deepgram nova-3 speech-to-text → GPT-4o mini → Murf Falcon text-to-speech
+  │  the phone page (web /phone) rings over Agora RTC; the person answers
+  │  the model emits tool calls
+  │  POST <MCP_ENDPOINT>              streamable HTTP, called by Agora's cloud
   ▼
-FastMCP server at /mcp (server/, :8000, public via tunnel)
-  │  executes get_time() → returns current time string
+Shop Tools (FastMCP at /mcp, same backend)
+  │  12 tools; the server checks the caller's role on every call
+  │  purchases go through the Order Gate
   ▼
-Agora ConvoAI Cloud → selected model incorporates result → user hears speech
-                     → RTM transcript / metrics → web UI
+SQLite shop (server/data/)            stock, suppliers, budget, orders, events
+  ▼
+Dashboard (web /)                     polls /api/state and /api/events:
+                                      shelf, live trace, calls, orders
 ```
 
-`POST /api/stopAgent { agentId }` ends the session.
+After the call, the Orchestrator rings back when a promised callback is due,
+and the Shelf Watcher closes the case when it sees the stock back on the shelf.
+
+## Orchestrator rules
+
+1. Shelf count above the product's low mark: nothing to do.
+2. Product switched off, a call in progress, an open refill task, or a pending
+   callback for it: stay quiet.
+3. Back room has stock: create a refill task and ring the employee.
+4. Back room empty and an order already placed: no call.
+5. Back room empty and nothing on order: ring the supervisor.
+6. `report_backroom_shortage` from the employee's call: ring the supervisor.
+
+## Tool scope
+
+One MCP server serves both agents. `shop_tool` in `server/src/mcp_server.py`
+wraps every tool and returns `OUT_OF_SCOPE` when the current call's role may
+not use it.
+
+| Role | Tools |
+|---|---|
+| Shared | `get_shelf_status`, `schedule_callback` |
+| Replenishment (employee call) | `get_refill_tasks`, `complete_refill_task`, `report_backroom_shortage` |
+| Procurement (supervisor call) | `get_sales_rate`, `get_demand_forecast`, `get_supplier_quotes`, `get_budget`, `propose_order`, `confirm_order`, `get_order_status` |
+
+The Procurement Agent's first turn calls `get_shelf_status`,
+`get_demand_forecast`, `get_supplier_quotes` and `get_budget` together.
+
+## Order Gate
+
+`propose_order` stores a priced proposal. `confirm_order` places it. Refusals:
+
+| Code | Raised when |
+|---|---|
+| `ALREADY_ON_ORDER` | An order for the product is already placed (at proposal) |
+| `OVER_BUDGET` | The total exceeds the remaining budget (at proposal and again at confirmation) |
+| `SUPPLIER_SHORT` | The supplier cannot fill the quantity (at proposal and again at confirmation) |
+| `APPROVAL_NOT_CLEAR` | The supervisor's words are not a clear yes, or include a no or a wait |
+| `NOT_READ_OUT` | The proposal is under four seconds old, so it cannot have been heard |
+| `PROPOSAL_EXPIRED` | The proposal is over ten minutes old |
+| `PRICE_CHANGED` | The supplier's price differs from the one read out |
 
 ## Single-process design
 
-The FastMCP server is mounted inside the FastAPI app via Starlette's `mount()`.
-Its session manager lifespan runs alongside the FastAPI app lifespan. One
-uvicorn process, one port (8000), one tunnel (`ngrok http 8000`), one Docker
-container.
+The FastMCP server is mounted inside the FastAPI app, so tokens, agent
+lifecycle, the shop, the camera and the tools share one process and one port
+(8000). The demo exposes the web app with one tunnel (`ngrok http 3000`); Next
+rewrites pass `/api/*` and `/mcp` through to the backend, so phones, the
+dashboard and Agora's cloud all use the same address.
 
-`MCP_ENDPOINT` still points at the **public** URL (`<tunnel>/mcp`) because
-Agora cloud — not the browser — calls the tool endpoint. The backend and the MCP
-path are co-public on the same origin.
+`MCP_ENDPOINT` must be that **public** address (`https://<tunnel>/mcp`),
+because Agora's cloud calls the tools, not the browser.
 
-**Co-public caveat**: exposing port 8000 publicly also exposes `/mcp`. For
-production use, add authentication to the MCP endpoint or restrict access to
-Agora cloud IPs via a gateway.
+## API (backend, port 8000)
 
-## Distinct from recipe-agent-tool-calling
+The browser calls these as `/api/*`.
 
-In `recipe-agent-tool-calling` the tools run **inside** the `llm/` endpoint:
-the agent's custom LLM proxy intercepts tool calls and handles them locally. In
-this recipe Agora cloud orchestrates the tools via the MCP protocol — the
-selected OpenAI path issues the tool call, Agora invokes `MCP_ENDPOINT`, and the
-result flows back to the model.
-
-## API (agent backend, port 8000)
-
-| Endpoint | Method | Description |
-| --- | --- | --- |
-| `/get_config` | GET | Token + channel/UID config |
-| `/startAgent` | POST | Start the agent session |
-| `/stopAgent` | POST | Stop the agent by `agent_id` |
-| `/mcp` | POST | FastMCP streamable-HTTP endpoint (called by Agora cloud) |
-
-The browser calls the first three as `/api/*`; Next rewrites them to
-`AGENT_BACKEND_URL`. Agora cloud calls `/mcp` directly at `MCP_ENDPOINT`.
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/get_config` | GET | Agora token, channel and user IDs |
+| `/startAgent`, `/stopAgent` | POST | Start or stop a voice agent |
+| `/state`, `/events` | GET | Shop snapshot and the live event trail |
+| `/vision/frame` | POST | A webcam frame for the Shelf Watcher |
+| `/shelf`, `/products/enabled`, `/calendar` | POST | Manual count, per-product on/off, upcoming occasion |
+| `/products/details` | GET | Everything known about one product |
+| `/calls/pending`, `/calls/{id}/{action}` | GET, POST | Ringing calls; answer, decline, end |
+| `/phone/*` | GET, POST | Optional real phone calls through a SIP trunk |
+| `/admin/reset` | POST | Reset the demo shop |
+| `/mcp` | POST | The MCP tools, called by Agora's cloud |
 
 ## Auth
 
-- Browser → agent backend: none (local dev).
-- Agent backend → Agora cloud: Token007, generated from `AGORA_APP_ID` +
-  `AGORA_APP_CERTIFICATE`.
-- Agora cloud → MCP server: streamable-http (no auth on the mock; add it for
-  production use).
-- OpenAI Pipeline: Agora-managed by default; optional BYO uses
-  `OPENAI_API_KEY` and `OPENAI_BASE_URL`.
-- OpenAI Realtime: `OPENAI_REALTIME_API_KEY` is required.
+- Backend → Agora: Token007 from `AGORA_APP_ID` and `AGORA_APP_CERTIFICATE`,
+  which never leave `server/`.
+- Speech-to-text and the LLM use Agora-managed credentials; Murf Falcon uses
+  `MURF_API_KEY`.
+- Browser → backend and Agora → `/mcp` are unauthenticated in this demo. A
+  deployment should put both behind authentication or a gateway.
