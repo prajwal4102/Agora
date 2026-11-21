@@ -38,6 +38,8 @@ When a product needs reordering, work in this order, without stopping to announc
 
 If the supervisor asks you to check or verify stock, call get_shelf_status straight away and answer with the numbers.
 
+Several products on one call: if your opening line named more than one product, deal with them together. In step 1 make the three product lookups for every product in the same reply, and get_budget once. Recommend one option per product, one short sentence each, then give the combined total. If the combined total is more than the budget, keep the full quantity for the product that is already low and cut the nearly-low one to the largest number of full packs that fits, and say so. Call propose_order once per product, read all of them back with the combined total, and after one clear yes call confirm_order for each proposal with the supervisor's words. If they want only some of the products, order only those.
+
 Rules for ordering:
 - Never call confirm_order without a spoken yes to the exact proposal you just read out.
 - If the supervisor wants the usual amount instead of the forecast, use normal_order_quantity.
@@ -51,12 +53,19 @@ Keep it brisk. The supervisor is busy and wants a recommendation, not a tour of 
 SUPERVISOR_GREETING = f"Hello, this is {AGENT_NAME} from {STORE_NAME} stock control. How can I help?"
 
 
-def supervisor_alert_greeting(product: str, on_shelf: int) -> str:
-    """Opening line when the agent calls the supervisor about a low product."""
-    return (
+def supervisor_alert_greeting(product: str, on_shelf: int, also: Optional[list] = None) -> str:
+    """Opening line when the agent calls the supervisor about a low product.
+    `also` lists products that are nearly low and have no back-room stock either."""
+    opening = (
         f"Hello, this is {AGENT_NAME} from {STORE_NAME} stock control. "
         f"{product.capitalize()} is down to {on_shelf} on the shelf and the back room is empty. "
-        "Shall I check suppliers for a reorder?"
+    )
+    if not also:
+        return opening + "Shall I check suppliers for a reorder?"
+    others = " and ".join(f"{c['product']} at {c['on_shelf']}" for c in also)
+    return (
+        opening + f"Nearly low as well, with nothing in the back room: {others}. "
+        "Shall I check suppliers for all of them together?"
     )
 
 
@@ -68,6 +77,7 @@ Language: speak Hinglish, the way shop staff in India talk. Write Hindi words in
 
 What you do on this call:
 - Tell them which product to bring from the back room and how many. Use get_refill_tasks if you need the details again.
+- If your opening line named more than one product, they are one trip to the back room. The numbers are deliberately a little under a full shelf, so there is room when a customer puts something back; do not ask for more. When they say it is done, call complete_refill_task once for each product. For a promise, one schedule_callback with the first product is enough.
 - "I will do it", "ठीक है, भर देता हूँ", "okay" or "going now" is a promise, not a finished job. Nothing has moved yet, so do NOT call complete_refill_task and do not say the shelf is full. Call schedule_callback with the product, in_minutes (the time they name; 10 if they name none) and note "check the shelf". Then say: you will check the shelf in that many minutes, you will not call if it is refilled, and you will call again if it is not. Then say goodbye.
 - Call complete_refill_task only when they tell you the shelf has already been refilled, in the past tense, for example "भर दिया" or "it is done". Then thank them and close with one line: what was refilled and the new shelf count.
 - You cannot see the shelf. Never say "I can see" or describe the shelf; give only counts that a tool returned.
@@ -81,13 +91,18 @@ Keep every reply to one or two short sentences."""
 EMPLOYEE_GREETING = f"नमस्ते, मैं {STORE_NAME} stock control से {AGENT_NAME} बोल रही हूँ। बताइए, क्या मदद चाहिए?"
 
 
-def employee_alert_greeting(product: str, unit: str, on_shelf: int, bring: int) -> str:
-    """Opening line when the agent calls the employee to refill a shelf."""
-    return (
+def employee_alert_greeting(product: str, unit: str, on_shelf: int, bring: int,
+                            also: Optional[list] = None) -> str:
+    """Opening line when the agent calls the employee to refill a shelf.
+    `also` lists nearly-low products to bring on the same trip."""
+    line = (
         f"नमस्ते, मैं {STORE_NAME} stock control से {AGENT_NAME} बोल रही हूँ। "
         f"Shelf पर {product} सिर्फ़ {on_shelf} बचे हैं। "
         f"Please back room से {bring} {unit} लाकर shelf भर दीजिए।"
     )
+    for c in also or []:
+        line += f" {c['product']} भी कम हो रहे हैं, {c['on_shelf']} बचे हैं, तो साथ में {c['bring']} {c['unit']} वो भी ले आइए।"
+    return line
 
 
 def callback_greeting(role: str, product: Optional[str], on_shelf: Optional[int], note: str) -> str:

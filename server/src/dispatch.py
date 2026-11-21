@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 import prompts
 import shop_db
-from shop_db import ShopError, _connect, _lock, find_product, log_event
+from shop_db import ShopError, _connect, _lock, find_product, log_event, near_low_mark, refill_target
 
 RING_TIMEOUT_SECONDS = 45
 
@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS calls (
     product_id INTEGER,
     reason TEXT NOT NULL,
     greeting TEXT NOT NULL,
+    also TEXT,                       -- other products covered by the same call: ",a,b,"
     status TEXT NOT NULL,            -- ringing | answered | ended | declined | missed
     created_at REAL NOT NULL,
     answered_at REAL,
@@ -58,6 +59,9 @@ CREATE TABLE IF NOT EXISTS watch_off (
 def init() -> None:
     with _lock, _connect() as conn:
         conn.executescript(SCHEMA)
+        columns = [r["name"] for r in conn.execute("PRAGMA table_info(calls)").fetchall()]
+        if "also" not in columns:  # a database made before calls could cover several products
+            conn.execute("ALTER TABLE calls ADD COLUMN also TEXT")
 
 
 def reset() -> None:
@@ -76,6 +80,7 @@ def _call_view(row: Any) -> Dict[str, Any]:
         "call_id": row["id"],
         "role": row["role"],
         "product": row["product"],
+        "also": [n for n in (row["also"] or "").split(",") if n],
         "reason": row["reason"],
         "greeting": row["greeting"],
         "status": row["status"],
@@ -88,21 +93,24 @@ _CALL_SELECT = (
 )
 
 
-def place_call(role: str, product: Optional[str], reason: str, greeting: str) -> Dict[str, Any]:
-    """Queue an outgoing call. The matching phone starts ringing on its next poll."""
+def place_call(role: str, product: Optional[str], reason: str, greeting: str,
+               also: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Queue an outgoing call. The matching phone starts ringing on its next poll.
+    `also` names other products the same call covers."""
     if role not in ROLES:
         raise ShopError("BAD_ROLE", f"Unknown role '{role}'.")
     with _lock, _connect() as conn:
         product_id = find_product(conn, product)["id"] if product else None
         cur = conn.execute(
-            "INSERT INTO calls (role, product_id, reason, greeting, status, created_at)"
-            " VALUES (?,?,?,?, 'ringing', ?)",
-            (role, product_id, reason, greeting, time.time()),
+            "INSERT INTO calls (role, product_id, reason, greeting, also, status, created_at)"
+            " VALUES (?,?,?,?,?, 'ringing', ?)",
+            (role, product_id, reason, greeting, "," + ",".join(also) + "," if also else None, time.time()),
         )
         call_id = cur.lastrowid
-    log_event("call", f"Calling the {role}", {"call_id": call_id, "product": product, "reason": reason},
+    log_event("call", f"Calling the {role}",
+              {"call_id": call_id, "product": product, "also": also or [], "reason": reason},
               agent="dispatcher", to=VOICE_AGENT[role])
-    call = {"call_id": call_id, "role": role, "product": product, "reason": reason}
+    call = {"call_id": call_id, "role": role, "product": product, "also": also or [], "reason": reason}
     if on_call_placed is not None:
         on_call_placed({**call, "greeting": greeting})
     return call
@@ -213,7 +221,8 @@ def fire_due_callbacks() -> List[Dict[str, Any]]:
             if row["role"] == "employee" and row["product"] and row["shelf_qty"] > row["shelf_threshold"]:
                 conn.execute("UPDATE callbacks SET status='done' WHERE id=?", (row["id"],))
                 conn.execute(
-                    "UPDATE refill_tasks SET status='done', done_at=? WHERE product_id=? AND status='open'",
+                    "UPDATE refill_tasks SET status='done', done_at=? WHERE status='open' AND (product_id=?"
+                    " OR product_id IN (SELECT id FROM products WHERE shelf_qty > shelf_threshold))",
                     (time.time(), row["product_id"]),
                 )
                 refilled.append(row)
@@ -268,11 +277,45 @@ def set_enabled(product: str, enabled: bool) -> Dict[str, Any]:
     return {"ok": True, "product": prod["name"], "enabled": enabled, **action}
 
 
-def _has_live_call(conn: Any, product_id: int) -> bool:
+def _has_live_call(conn: Any, prod: Any) -> bool:
+    """Is a call ringing or in progress that is about this product, or covers it?"""
     _expire_stale(conn)
     return conn.execute(
-        "SELECT 1 FROM calls WHERE product_id=? AND status IN ('ringing','answered')", (product_id,)
+        "SELECT 1 FROM calls WHERE status IN ('ringing','answered') AND (product_id=? OR also LIKE ?)",
+        (prod["id"], f"%,{prod['name']},%"),
     ).fetchone() is not None
+
+
+def _is_being_handled(conn: Any, prod: Any) -> bool:
+    """Switched off, on a call, or already with a refill task or callback."""
+    if _is_off(conn, prod["name"]) or _has_live_call(conn, prod):
+        return True
+    return conn.execute(
+        "SELECT 1 FROM refill_tasks WHERE product_id=? AND status='open'"
+        " UNION SELECT 1 FROM callbacks WHERE product_id=? AND status='pending'",
+        (prod["id"], prod["id"]),
+    ).fetchone() is not None
+
+
+def _nearly_low_companions(conn: Any, primary: Any, needs_refill: bool) -> List[Any]:
+    """Other products close enough to their low mark to deal with on the same
+    call: ones the employee can refill from the back room when the call is a
+    refill, ones with an empty back room and nothing on order when it is a reorder."""
+    found = []
+    rows = conn.execute("SELECT * FROM products WHERE id<>? ORDER BY id", (primary["id"],)).fetchall()
+    for row in rows:
+        if row["shelf_qty"] > near_low_mark(row) or _is_being_handled(conn, row):
+            continue
+        can_refill = min(refill_target(row) - row["shelf_qty"], row["backroom_qty"]) > 0
+        if needs_refill and can_refill:
+            found.append(row)
+        elif not needs_refill and row["backroom_qty"] <= 0:
+            on_order = conn.execute(
+                "SELECT 1 FROM orders WHERE product_id=? AND status='placed'", (row["id"],)
+            ).fetchone()
+            if not on_order:
+                found.append(row)
+    return found
 
 
 # --------------------------------------------------------------------------- #
@@ -427,7 +470,7 @@ def triage(product: str) -> Dict[str, Any]:
             return {"action": "none", "why": "shelf is above its threshold"}
         if _is_off(conn, prod["name"]):
             return {"action": "none", "why": "the agent is switched off for this product"}
-        if _has_live_call(conn, prod["id"]):
+        if _has_live_call(conn, prod):
             return {"action": "none", "why": "a call about this product is already in progress"}
         open_task = conn.execute(
             "SELECT 1 FROM refill_tasks WHERE product_id=? AND status='open'", (prod["id"],)
@@ -443,12 +486,26 @@ def triage(product: str) -> Dict[str, Any]:
         if waiting:
             # They said "later". Do not ring again until the callback is due.
             return {"action": "none", "why": "a callback about this product is already scheduled"}
-        refill_qty = min(prod["shelf_capacity"] - prod["shelf_qty"], prod["backroom_qty"])
+        # Refill to 80% of the shelf, not to the brim.
+        refill_qty = min(refill_target(prod) - prod["shelf_qty"], prod["backroom_qty"])
         if refill_qty > 0:
             conn.execute(
                 "INSERT INTO refill_tasks (product_id, quantity, status, created_at) VALUES (?,?,'open',?)",
                 (prod["id"], refill_qty, time.time()),
             )
+        # While someone is being rung anyway, add the products that are nearly low.
+        companions = []
+        if refill_qty > 0 or not on_order:
+            for row in _nearly_low_companions(conn, prod, needs_refill=refill_qty > 0):
+                bring = min(refill_target(row) - row["shelf_qty"], row["backroom_qty"])
+                if refill_qty > 0:
+                    conn.execute(
+                        "INSERT INTO refill_tasks (product_id, quantity, status, created_at)"
+                        " VALUES (?,?,'open',?)", (row["id"], bring, time.time()),
+                    )
+                companions.append({"product": row["name"], "unit": row["unit"],
+                                   "on_shelf": row["shelf_qty"], "bring": max(0, bring)})
+    also = [c["product"] for c in companions]
     name, unit = prod["name"], prod["unit"]
     log_event("decision", f"{name} is low: {prod['shelf_qty']} left on the shelf",
               {"product": name, "on_shelf": prod["shelf_qty"], "threshold": prod["shelf_threshold"]},
@@ -457,22 +514,36 @@ def triage(product: str) -> Dict[str, Any]:
         log_event("decision", f"Back room has {prod['backroom_qty']}. Sending the employee to refill.",
                   {"product": name, "in_back_room": prod["backroom_qty"], "bring": refill_qty},
                   agent="dispatcher", to="floor_agent")
+        _log_companions(companions, "floor_agent")
         call = place_call(
-            "employee", name, f"refill {refill_qty} {name} from the back room",
-            prompts.employee_alert_greeting(name, unit, prod["shelf_qty"], refill_qty),
+            "employee", name, f"refill {refill_qty} {name} from the back room"
+            + (f", and {', '.join(also)} while there" if also else ""),
+            prompts.employee_alert_greeting(name, unit, prod["shelf_qty"], refill_qty, companions),
+            also,
         )
-        return {"action": "call_employee", "bring_quantity": refill_qty, **call}
+        return {"action": "call_employee", "bring_quantity": refill_qty, "also_refill": companions, **call}
     if on_order:
         log_event("decision", f"Back room is empty but {name} is already on order. No call needed.",
                   {"product": name}, agent="dispatcher", to="order_gate")
         return {"action": "none", "why": "already on order"}
     log_event("decision", "Back room is empty. Calling the supervisor about a reorder.",
               {"product": name, "in_back_room": 0}, agent="dispatcher", to="procurement_agent")
+    _log_companions(companions, "procurement_agent")
     call = place_call(
-        "supervisor", name, f"{name} is low on the shelf and the back room is empty",
-        prompts.supervisor_alert_greeting(name, prod["shelf_qty"]),
+        "supervisor", name, f"{name} is low on the shelf and the back room is empty"
+        + (f"; {', '.join(also)} nearly low too" if also else ""),
+        prompts.supervisor_alert_greeting(name, prod["shelf_qty"], companions),
+        also,
     )
-    return {"action": "call_supervisor", **call}
+    return {"action": "call_supervisor", "also_reorder": companions, **call}
+
+
+def _log_companions(companions: List[Dict[str, Any]], to: str) -> None:
+    if not companions:
+        return
+    listed = ", ".join(f"{c['product']} ({c['on_shelf']} left)" for c in companions)
+    log_event("decision", f"Nearly low as well: {listed}. Adding to the same call.",
+              {"products": [c["product"] for c in companions]}, agent="dispatcher", to=to)
 
 
 def product_details(product: str) -> Dict[str, Any]:
@@ -500,6 +571,8 @@ def product_details(product: str) -> Dict[str, Any]:
         "on_shelf": prod["shelf_qty"],
         "shelf_capacity": prod["shelf_capacity"],
         "low_threshold": prod["shelf_threshold"],
+        "nearly_low_mark": near_low_mark(prod),
+        "refill_up_to": refill_target(prod),
         "is_low": prod["shelf_qty"] <= prod["shelf_threshold"],
         "in_back_room": prod["backroom_qty"],
         "total_in_store": sales["total_in_store"],

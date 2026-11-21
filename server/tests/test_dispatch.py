@@ -12,10 +12,10 @@ def dispatch(shop):
 def test_low_shelf_with_back_room_stock_calls_employee(shop, dispatch):
     result = dispatch.update_shelf("water bottle", 3)
     assert result["action"] == "call_employee"
-    assert result["bring_quantity"] == 9  # shelf holds 12, 3 left
+    assert result["bring_quantity"] == 6  # refill to 80% of 12 is 9, and 3 are left
     call = dispatch.pending_call("employee")
     assert call["product"] == "water bottle"
-    assert "9 bottle" in call["greeting"]
+    assert "6 bottle" in call["greeting"]
     assert dispatch.pending_call("supervisor") is None
 
 
@@ -34,7 +34,7 @@ def test_healthy_shelf_and_repeat_counts_do_not_call(shop, dispatch):
 def test_refill_moves_stock_and_closes_task(shop, dispatch):
     dispatch.update_shelf("water bottle", 3)
     done = dispatch.complete_refill("water bottle")
-    assert done["on_shelf_now"] == 12 and done["in_back_room_now"] == 15
+    assert done["on_shelf_now"] == 9 and done["in_back_room_now"] == 18
     assert dispatch.open_refill_tasks()["count"] == 0
 
 
@@ -242,3 +242,34 @@ def test_a_promise_to_refill_that_is_not_kept_rings_again(shop, dispatch):
     placed = dispatch.fire_due_callbacks()
     assert len(placed) == 1 and placed[0]["role"] == "employee"
     assert "refill नहीं हुआ" in dispatch.pending_call("employee")["greeting"]
+
+
+def test_refill_leaves_room_on_the_shelf(shop, dispatch):
+    result = dispatch.update_shelf("pen", 1)
+    assert result["bring_quantity"] == 3  # shelf holds 5, refill stops at 4
+    assert shop.shelf_status("pen")["refill_up_to"] == 4
+
+
+def test_nearly_low_products_join_the_same_refill_call(shop, dispatch):
+    dispatch.update_shelf("biscuit packet", 6)  # low mark is 4: nearly low, no call by itself
+    assert dispatch.pending_call("employee") is None
+    result = dispatch.update_shelf("water bottle", 3)
+    assert result["action"] == "call_employee"
+    assert [c["product"] for c in result["also_refill"]] == ["biscuit packet"]
+    call = dispatch.pending_call("employee")
+    assert call["also"] == ["biscuit packet"] and "biscuit packet" in call["greeting"]
+    assert dispatch.open_refill_tasks()["count"] == 2
+    # the nearly-low product is already covered, so falling further rings nobody
+    assert dispatch.update_shelf("biscuit packet", 3)["action"] == "none"
+
+
+def test_nearly_low_products_join_the_same_reorder_call(shop, dispatch):
+    dispatch.update_shelf("cola can", 6)  # nearly low, back room empty
+    assert dispatch.pending_call("supervisor") is None
+    result = dispatch.update_shelf("chocolate bar", 2)
+    assert result["action"] == "call_supervisor"
+    assert [c["product"] for c in result["also_reorder"]] == ["cola can"]
+    assert "cola can at 6" in dispatch.pending_call("supervisor")["greeting"]
+    assert dispatch.update_shelf("cola can", 3)["action"] == "none"  # covered by the live call
+    # a healthy shelf, or one that needs the other kind of call, is left out
+    assert "water bottle" not in dispatch.pending_call("supervisor")["greeting"]

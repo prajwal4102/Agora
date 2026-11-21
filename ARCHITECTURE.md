@@ -62,6 +62,15 @@ and the Shelf Watcher closes the case when it sees the stock back on the shelf.
 5. Back room empty and nothing on order: ring the supervisor.
 6. `report_backroom_shortage` from the employee's call: ring the supervisor.
 
+Grouping: when a call is placed, other products at or below their nearly-low
+mark (low mark plus 15% of capacity) that need the same kind of action are
+added to it: refill tasks are created for them, or they are named to the
+supervisor for a combined order. A product covered by a live call is not rung
+about again.
+
+Refill quantity: up to 80% of shelf capacity (`refill_target` in
+`server/src/shop_db.py`), so there is room when a customer returns an item.
+
 ## Tool scope
 
 One MCP server serves both agents. `shop_tool` in `server/src/mcp_server.py`

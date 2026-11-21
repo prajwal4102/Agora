@@ -106,8 +106,8 @@ export function ProductDetailsModal({
 							<div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
 								<Tile label="On the shelf" value={`${d.on_shelf}`} note={`of ${d.shelf_capacity}`} tone={d.is_low ? "text-red-400" : undefined} />
 								<Tile label="Back room" value={`${d.in_back_room}`} note="warehouse stock" />
-								<Tile label="Total in store" value={`${d.total_in_store}`} note={`${d.unit}s`} />
-								<Tile label="Low mark" value={`${d.low_threshold}`} note="agent acts at or below" />
+								<Tile label="Refill up to" value={`${d.refill_up_to}`} note={`80% of ${d.shelf_capacity} · room for returns`} />
+								<Tile label="Low mark" value={`${d.low_threshold}`} note={`joins a call at ${d.nearly_low_mark} or below`} />
 							</div>
 						</section>
 

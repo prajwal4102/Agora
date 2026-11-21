@@ -158,6 +158,8 @@ export interface ProductDetails {
   on_shelf: number
   shelf_capacity: number
   low_threshold: number
+  nearly_low_mark: number
+  refill_up_to: number
   is_low: boolean
   in_back_room: number
   total_in_store: number

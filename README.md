@@ -22,7 +22,7 @@ Built solo for **Build with Agora – BLR** (KNOTiC × Agora × Murf AI), **Trac
 | **Human in the loop** | Every purchase is read back and needs a clear spoken yes; six further checks guard every order |
 | **Follow-up** | Promised callbacks really ring; the camera confirms a refill or delivery by sight and closes the case |
 | **Stack** | Python FastAPI + FastMCP + SQLite, Next.js + TypeScript, YOLO-World + CLIP running locally |
-| **Tests** | 56 automated backend tests |
+| **Tests** | 59 automated backend tests |
 | **Status** | Working end to end; demo film linked above |
 
 ## The problem
@@ -68,6 +68,11 @@ flowchart TD
 4. Back room empty and an order already placed → no call.
 5. Back room empty and nothing on order → ring the **supervisor** (Procurement Agent).
 6. Employee reports the back-room stock is missing → the case goes back to the Orchestrator, which rings the supervisor.
+
+Two rules keep the calls sensible:
+
+- **One call, several products.** When a call is being made anyway, products that are *nearly* low (within 15% of capacity above their low mark) are added to it, so the employee makes one trip and the supervisor approves one combined order.
+- **Refill to 80%, not to the brim.** A refill stops at 80% of what the shelf holds, leaving room when a customer puts something back.
 
 ## See it working
 
@@ -155,7 +160,7 @@ A changed quantity replaces the old proposal, so a stale one cannot be confirmed
 | [`server/src/seasons.py`](server/src/seasons.py) | Store calendar used by the demand forecast |
 | [`server/src/call_watch.py`](server/src/call_watch.py) | Captions live calls and rescues an agent that stalls |
 | [`server/src/telephony.py`](server/src/telephony.py) | Optional real phone calls through a SIP trunk |
-| [`server/tests/`](server/tests/) | 56 tests |
+| [`server/tests/`](server/tests/) | 59 tests |
 | [`web/src/components/Dashboard.tsx`](web/src/components/Dashboard.tsx) | Shelf, camera, calls, orders |
 | [`web/src/components/AgentPlayground.tsx`](web/src/components/AgentPlayground.tsx) | Live trace of every hand-off, and the architecture map |
 | [`web/src/components/PhoneApp.tsx`](web/src/components/PhoneApp.tsx) | The phone page that rings |

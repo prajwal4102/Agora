@@ -369,6 +369,25 @@ def _budget(conn: sqlite3.Connection) -> float:
     return float(row["value"]) if row else 0.0
 
 
+# A shelf is refilled to this share of what it can hold, not to the brim, so
+# there is still room when a customer puts something back.
+REFILL_TARGET_PERCENT = 80
+# A product within this share of its capacity above the low mark is "nearly
+# low": not worth a call by itself, but worth adding to a call already being made.
+NEAR_LOW_PERCENT = 15
+
+
+def refill_target(row: sqlite3.Row) -> int:
+    """How many should be on the shelf after a refill."""
+    return max(1, row["shelf_capacity"] * REFILL_TARGET_PERCENT // 100)
+
+
+def near_low_mark(row: sqlite3.Row) -> int:
+    """At or below this count a product is nearly low."""
+    margin = max(1, -(-row["shelf_capacity"] * NEAR_LOW_PERCENT // 100))
+    return row["shelf_threshold"] + margin
+
+
 def _shelf_view(row: sqlite3.Row) -> Dict[str, Any]:
     return {
         "product": row["name"],
@@ -377,6 +396,8 @@ def _shelf_view(row: sqlite3.Row) -> Dict[str, Any]:
         "shelf_capacity": row["shelf_capacity"],
         "low_threshold": row["shelf_threshold"],
         "is_low": row["shelf_qty"] <= row["shelf_threshold"],
+        "is_nearly_low": row["shelf_threshold"] < row["shelf_qty"] <= near_low_mark(row),
+        "refill_up_to": refill_target(row),
         "in_back_room": row["backroom_qty"],
     }
 
