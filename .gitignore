@@ -45,3 +45,6 @@ weights/
 *.mp4
 *.mkv
 *.webm
+
+# film notes and recordings stay local
+video/
