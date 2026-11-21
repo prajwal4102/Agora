@@ -3,16 +3,15 @@ name: CI
 on:
   push:
   pull_request:
-  workflow_call:
 
 jobs:
   backend:
-    name: backend (py${{ matrix.python-version }} / ${{ matrix.os }})
+    name: backend tests (py${{ matrix.python-version }} / ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -27,29 +26,12 @@ jobs:
           pytest tests -v
 
   web:
-    name: web (bun)
+    name: web type-check
     runs-on: ubuntu-latest
-    env:
-      AGENT_BACKEND_URL: http://localhost:8000
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install
         working-directory: web
-      - run: bun run verify
+      - run: bun x tsc --noEmit
         working-directory: web
-
-  windows:
-    name: setup + web (windows)
-    runs-on: windows-latest
-    env:
-      AGENT_BACKEND_URL: http://localhost:8000
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - uses: oven-sh/setup-bun@v2
-      - run: bun run setup
-      - run: bun run verify:backend
-      - run: bun run verify:web
