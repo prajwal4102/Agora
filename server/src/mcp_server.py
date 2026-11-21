@@ -45,6 +45,25 @@ shop_db.init_db()
 dispatch.init()
 
 
+# Which tools each voice agent may run, by who is on the line. Both agents
+# connect to this same server, so the limit is enforced here: the agent talking
+# to the floor employee cannot price or place an order, whatever it is asked.
+_SHARED = {"get_shelf_status", "schedule_callback"}
+TOOL_SCOPE = {
+    "employee": _SHARED | {"get_refill_tasks", "complete_refill_task", "report_backroom_shortage"},
+    "supervisor": _SHARED | {
+        "get_sales_rate", "get_demand_forecast", "get_supplier_quotes", "get_budget",
+        "propose_order", "confirm_order", "get_order_status",
+    },
+}
+_OUT_OF_SCOPE = {
+    "employee": "This call is with the floor employee. Suppliers, prices, budget and orders"
+                " are handled only on the supervisor's call. Say the supervisor looks after that.",
+    "supervisor": "This call is with the supervisor. Refill tasks are handled on the floor"
+                  " employee's call. Say the floor team looks after that.",
+}
+
+
 def shop_tool(title: str) -> Callable:
     """Register a tool that logs its call and result and never raises a
     business error at the model."""
@@ -52,7 +71,10 @@ def shop_tool(title: str) -> Callable:
     def decorator(fn: Callable[..., Dict[str, Any]]) -> Callable[..., str]:
         @functools.wraps(fn)
         def wrapper(*args: Any, **kwargs: Any) -> str:
+            role = dispatch.current_role
             try:
+                if fn.__name__ not in TOOL_SCOPE.get(role, {fn.__name__}):
+                    raise shop_db.ShopError("OUT_OF_SCOPE", _OUT_OF_SCOPE[role])
                 result = fn(*args, **kwargs)
             except shop_db.ShopError as exc:
                 result = exc.to_dict()
@@ -91,6 +113,15 @@ def get_sales_rate(product: str) -> Dict[str, Any]:
     last, and a suggested order quantity. Call this before recommending an
     order quantity."""
     return shop_db.sales_rate(product)
+
+
+@shop_tool("Forecast demand")
+def get_demand_forecast(product: str) -> Dict[str, Any]:
+    """How much of a product the store should expect to sell, allowing for an
+    occasion that is coming up (Diwali, Christmas, Valentine's Day, exam
+    season). Returns normal sales, the expected uplift, the recommended order
+    quantity and the normal quantity, with a one-line reason to say aloud."""
+    return shop_db.demand_forecast(product)
 
 
 @shop_tool("Compared supplier quotes")
@@ -137,7 +168,14 @@ def schedule_callback(in_minutes: float, note: str, product: Optional[str] = Non
     """Promise to ring this person back later, for when they want to decide
     later or are busy. in_minutes is how many minutes from now (1 for "in a
     minute", 60 for "in an hour"). The call really is placed when it is due."""
-    return shop_db.schedule_callback(product, in_minutes, note, role=dispatch.current_role)
+    result = shop_db.schedule_callback(product, in_minutes, note, role=dispatch.current_role)
+    if dispatch.current_role == "employee" and product:
+        result["checks_shelf"] = True
+        result["what_happens"] = (
+            f"The shelf is checked in {in_minutes:g} minutes. If it has been refilled, nobody is called."
+            " If it is still low, the employee is rung again. Tell them exactly that."
+        )
+    return result
 
 
 # --- Employee side: refilling the shelf from the back room ---

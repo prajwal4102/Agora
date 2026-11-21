@@ -34,11 +34,14 @@ Thumbs.db
 # AI/process docs (never publish)
 docs/superpowers/
 
-# old project kept locally for UI reference only
-_reference_sakarmi/
-
 # local demo database (rebuilt from seed data on first run)
 server/data/
 
 # detector text-model weights (downloaded on first run)
 weights/
+
+# demo recordings (the film is published on YouTube, not in the repo)
+*.mov
+*.mp4
+*.mkv
+*.webm

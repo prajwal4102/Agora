@@ -56,12 +56,12 @@ type Meta = {
 const META: Record<AgentKey, Meta> = {
 	employee: { Icon: User, label: "Floor Employee", sub: "On phone 1 · refills shelves", kind: "HUMAN", c: "#fbbf24", g: ["#fbbf24", "#d97706"] },
 	supervisor: { Icon: UserCog, label: "Store Supervisor", sub: "On phone 2 · approves purchases", kind: "HUMAN", c: "#38bdf8", g: ["#38bdf8", "#2563eb"] },
-	floor_agent: { Icon: Headset, label: "Floor Agent", sub: "Voice · Hinglish · gets shelves refilled", kind: "LLM AGENT", c: "#fbbf24", g: ["#fbbf24", "#d97706"] },
+	floor_agent: { Icon: Headset, label: "Replenishment Agent", sub: "Voice · Hinglish · gets shelves refilled", kind: "LLM AGENT", c: "#fbbf24", g: ["#fbbf24", "#d97706"] },
 	procurement_agent: { Icon: ShoppingCart, label: "Procurement Agent", sub: "Voice · compares suppliers · negotiates", kind: "LLM AGENT", c: "#38bdf8", g: ["#38bdf8", "#2563eb"] },
-	dispatcher: { Icon: GitBranch, label: "Dispatcher", sub: "Decides who to call, and why", kind: "RULES", c: "#818cf8", g: ["#818cf8", "#4f46e5"] },
+	dispatcher: { Icon: GitBranch, label: "Orchestrator", sub: "Decides who to call, and why", kind: "RULES", c: "#818cf8", g: ["#818cf8", "#4f46e5"] },
 	shelf_watcher: { Icon: Eye, label: "Shelf Watcher", sub: "Camera · counts what is on the shelf", kind: "VISION", c: "#a78bfa", g: ["#a78bfa", "#7c3aed"] },
 	order_gate: { Icon: ShieldCheck, label: "Order Gate", sub: "No order without a spoken yes", kind: "RULES", c: "#34d399", g: ["#34d399", "#059669"] },
-	shop_tools: { Icon: Wrench, label: "Shop Tools · MCP", sub: "Stock · sales · 3 suppliers · budget", kind: "TOOLS", c: "#94a3b8", g: ["#94a3b8", "#475569"] },
+	shop_tools: { Icon: Wrench, label: "Shop Tools · MCP", sub: "Stock · forecast · 3 suppliers · budget", kind: "TOOLS", c: "#94a3b8", g: ["#94a3b8", "#475569"] },
 };
 
 /** What a voice agent is made of. Everything here is run by Agora's cloud for
@@ -76,78 +76,170 @@ const VOICE_STACK = [
 	"MCP · tools called from Agora's cloud",
 ];
 
-const DETAILS: Record<AgentKey, { role: string; points: string[]; tools?: string[]; note?: string; stack?: string[] }> = {
+type Detail = {
+	role: string;
+	/** Where this part lives and how it is reached: label, value. */
+	where: [string, string][];
+	points: string[];
+	/** Tools this part may run, each with what it does. */
+	tools?: [string, string][];
+	/** What it is refused, and by what. */
+	denied?: string;
+	note?: string;
+	stack?: string[];
+};
+
+const FLOOR_TOOLS: [string, string][] = [
+	["get_shelf_status", "shelf and back-room count"],
+	["get_refill_tasks", "open refill jobs"],
+	["complete_refill_task", "mark a shelf refilled"],
+	["report_backroom_shortage", "stock was not in the back room"],
+	["schedule_callback", "ring the employee back later"],
+];
+const PROCUREMENT_TOOLS: [string, string][] = [
+	["get_shelf_status", "shelf and back-room count"],
+	["get_sales_rate", "how fast it sells"],
+	["get_demand_forecast", "expected demand before an occasion"],
+	["get_supplier_quotes", "three suppliers, priced, in one call"],
+	["get_budget", "purchase budget left"],
+	["propose_order", "price an order and hold it"],
+	["confirm_order", "place it, with the spoken approval"],
+	["get_order_status", "orders and arrival times"],
+	["schedule_callback", "ring the supervisor back later"],
+];
+
+const DETAILS: Record<AgentKey, Detail> = {
 	employee: {
 		role: "The person on the shop floor",
+		where: [
+			["Where", "Their own phone, on the /phone page"],
+			["Connected by", "Agora RTC audio channel, one per call"],
+			["Talks to", "Replenishment Agent only"],
+		],
 		points: [
 			"Gets a call in Hinglish when a shelf needs refilling",
 			"Says when it is done, or that the stock is not in the back room",
+			"Can ring the agent to ask what is pending",
 		],
 		note: "Cannot approve purchases.",
 	},
 	supervisor: {
 		role: "The only source of approval",
+		where: [
+			["Where", "Their own phone, on the /phone page"],
+			["Connected by", "Agora RTC audio channel, one per call"],
+			["Talks to", "Procurement Agent only"],
+		],
 		points: [
 			"Gets a call with a recommendation, not a raw alert",
 			"Can change the quantity, the supplier, or set a spending limit",
+			"Can ring the agent to ask about stock or orders",
 		],
 		note: "Nothing is ordered until this person says yes.",
 	},
 	floor_agent: {
 		role: "Voice agent · talks to the employee",
-		points: [
-			"Agora Conversational AI, speaking through Murf Falcon in Hindi-English",
-			"Says what to bring from the back room and how many",
-			"If the stock is missing, corrects the count and hands the case back to the Dispatcher",
+		where: [
+			["Built in", "Agora Agent Studio, saved as “Floor Agent”"],
+			["Runs in", "Agora's cloud, on the Conversational AI Engine"],
+			["Lives for", "One call. Our backend starts it when the phone is answered"],
+			["Speaks", "Murf Falcon · voice Anisha · hi-IN"],
+			["Reaches tools", "Over MCP, from Agora's cloud into our backend"],
 		],
-		tools: ["get_refill_tasks", "complete_refill_task", "report_backroom_shortage", "get_shelf_status"],
+		points: [
+			"Says what to bring from the back room and how many",
+			"Marks the refill done when the employee says so",
+			"If the stock is missing, corrects the count and hands the case back to the Orchestrator",
+		],
+		tools: FLOOR_TOOLS,
+		denied: "No supplier, price, budget or order tools. Our server refuses them on this call.",
 		stack: VOICE_STACK,
 	},
 	procurement_agent: {
 		role: "Voice agent · talks to the supervisor",
-		points: [
-			"Agora Conversational AI, speaking through Murf Falcon",
-			"Checks sales, compares three suppliers, recommends one order",
-			"Re-prices when the supervisor pushes back and reads the total aloud",
+		where: [
+			["Built in", "Agora Agent Studio, saved as “Procurement Agent”"],
+			["Runs in", "Agora's cloud, on the Conversational AI Engine"],
+			["Lives for", "One call. Our backend starts it when the phone is answered"],
+			["Speaks", "Murf Falcon · voice Anisha · en-IN"],
+			["Reaches tools", "Over MCP, from Agora's cloud into our backend"],
 		],
-		tools: ["get_sales_rate", "get_supplier_quotes", "get_budget", "propose_order", "confirm_order", "get_order_status", "schedule_callback"],
-		note: "Cannot place an order by itself: every purchase goes through the Order Gate.",
+		points: [
+			"Forecasts demand, ordering more before Diwali, Christmas, Valentine's Day or exams",
+			"Compares three suppliers against that forecast and the budget, recommends one order",
+			"Re-prices when the supervisor pushes back and reads the total aloud",
+			"Places the order only after a spoken yes",
+		],
+		tools: PROCUREMENT_TOOLS,
+		denied: "No refill-task tools. Cannot place an order by itself: every purchase goes through the Order Gate.",
 		stack: VOICE_STACK,
 	},
 	dispatcher: {
-		role: "Triage · who needs to act",
+		role: "Decides who needs to act, and when",
+		where: [
+			["Runs in", "Our backend (FastAPI), on the store's machine"],
+			["Triggered by", "Every new shelf count, and a 3-second timer for callbacks"],
+			["Reads", "Stock, refill tasks and orders, straight from the shop database"],
+			["Hands off by", "Queuing a call. The phone rings, then Agora starts the agent"],
+		],
 		points: [
 			"Low shelf, stock in the back room: ring the employee",
 			"Low shelf, empty back room: ring the supervisor",
-			"Stays quiet if a call is live, a refill is pending, or the product is on order",
+			"Stays quiet if a call is live, a refill is pending, the product is on order, a callback is booked, or the product is switched off",
+			"Rings a promised callback when it falls due",
+			"Watches each live call: captions it, and pushes the agent on if it promises to check and goes silent",
 		],
-		note: "Fixed rules, not a language model, so it behaves the same every time.",
+		note: "Fixed rules, not a language model, so it behaves the same every time. The two voice agents never talk to each other directly: every hand-over passes through here.",
 	},
 	shelf_watcher: {
 		role: "Perception · counts the shelf",
+		where: [
+			["Runs in", "Our backend, on the store's machine"],
+			["Sees through", "A webcam. The dashboard sends it frames"],
+			["Models", "YOLO-World detector and a CLIP reader, both local"],
+			["Reports to", "Orchestrator, with a count per product"],
+		],
 		points: [
 			"A detector finds objects by shape from the catalogue's product names",
 			"A second model reads wrapped products the detector cannot name",
 			"Believes a count only after it holds steady for three frames",
 			"Confirms refills and deliveries by seeing the stock return",
 		],
-		note: "Runs on the laptop. No cloud vision service.",
+		note: "No cloud vision service. Pictures of the shelf never leave the store.",
 	},
 	order_gate: {
 		role: "The rule that guards every purchase",
+		where: [
+			["Runs in", "Our backend, inside propose_order and confirm_order"],
+			["Reached by", "Procurement Agent only"],
+			["Checks", "Supplier stock, budget, a live proposal, the spoken approval"],
+		],
 		points: [
 			"An order is first priced and held as a proposal",
 			"It is placed only against a live proposal, with the supervisor's own words",
 			"A changed quantity replaces the old proposal, so a stale one cannot be confirmed",
+			"The approval must be a clear yes: a no, a wait or an unclear answer is refused",
+			"A proposal cannot be confirmed in the same breath it was made, before it can be heard",
+			"Refuses a second order while one is on its way, and any order whose price changed",
 		],
 		note: "Enforced on the server, where the model cannot talk its way past it.",
 	},
 	shop_tools: {
-		role: "What the agents can look up",
+		role: "What the agents can look up and do",
+		where: [
+			["Runs in", "Our backend, as an MCP server at /mcp"],
+			["Called from", "Agora's cloud, over a public HTTPS address"],
+			["Data", "A shop database on the store's machine (demo data)"],
+			["Scope", "Each agent is limited to the tools for its job, checked on every call"],
+		],
 		points: [
-			"Served over MCP, called by Agora's cloud during the conversation",
-			"Shelf and back-room stock, sales rate, purchase budget",
-			"Price lists from three suppliers with different prices and delivery times",
+			"12 tools in all. Five for the floor, nine for procurement, two shared",
+			"Three suppliers with different prices, stock and delivery times",
+			"A failed tool returns the reason as data, so the agent can explain it and offer another route",
+		],
+		tools: [
+			...PROCUREMENT_TOOLS,
+			...FLOOR_TOOLS.filter(([name]) => !PROCUREMENT_TOOLS.some(([other]) => other === name)),
 		],
 	},
 };
@@ -474,40 +566,67 @@ function Stage({
 	);
 }
 
-/* full architecture map (overlay) — layered: people → voice agents →
-   coordination → perception and the purchase rule → shared tools */
-const ARCH_POS: Record<AgentKey, [number, number]> = {
-	employee: [200, 62],
-	supervisor: [560, 62],
-	floor_agent: [200, 172],
-	procurement_agent: [560, 172],
-	dispatcher: [380, 282],
-	shelf_watcher: [150, 398],
-	order_gate: [610, 398],
-	shop_tools: [380, 512],
-};
-const ARCH_WIRES: [AgentKey, AgentKey][] = [
-	["employee", "floor_agent"],
-	["supervisor", "procurement_agent"],
-	["floor_agent", "dispatcher"],
-	["procurement_agent", "dispatcher"],
-	["dispatcher", "shelf_watcher"],
-	["procurement_agent", "order_gate"],
-	["shelf_watcher", "order_gate"],
-	["dispatcher", "shop_tools"],
-	["floor_agent", "shop_tools"],
-	["procurement_agent", "shop_tools"],
-];
-const ARCH_LAYERS: [number, string][] = [
-	[62, "PEOPLE"],
-	[172, "VOICE AGENTS · LLM"],
-	[282, "COORDINATION · RULES"],
-	[398, "PERCEPTION · PURCHASE RULE"],
-	[512, "SHARED TOOLS · MCP"],
-];
-const ARCH_H = 580;
-const NODE_W = 196;
+/* full architecture map (overlay) — read top to bottom, in the order things
+   happen: see → decide → talk → act → guard. Dashed wires are the ways back up. */
+const ARCH_W = 1040;
+const ARCH_H = 620;
+const NODE_W = 190;
 const NODE_H = 54;
+const ARCH_POS: Record<AgentKey, [number, number]> = {
+	shelf_watcher: [500, 70],
+	dispatcher: [500, 185],
+	employee: [115, 310],
+	floor_agent: [365, 310],
+	procurement_agent: [635, 310],
+	supervisor: [885, 310],
+	shop_tools: [500, 440],
+	order_gate: [500, 550],
+};
+type ArchWire = {
+	a: AgentKey;
+	b: AgentKey;
+	d: string;
+	label: string;
+	at: [number, number];
+	anchor?: "start" | "middle" | "end";
+	dashed?: boolean; // a way back up, not the main flow
+	both?: boolean; // a conversation: arrows at both ends
+};
+const ARCH_WIRES: ArchWire[] = [
+	{ a: "shelf_watcher", b: "dispatcher", d: "M 500 97 L 500 158", label: "count per product", at: [512, 131] },
+	{ a: "dispatcher", b: "floor_agent", d: curve([470, 212], [365, 283]), label: "stock in the back room", at: [438, 232], anchor: "end" },
+	{ a: "dispatcher", b: "procurement_agent", d: curve([530, 212], [635, 283]), label: "back room is empty", at: [562, 232] },
+	{ a: "floor_agent", b: "employee", d: "M 270 310 L 210 310", label: "call", at: [240, 302], anchor: "middle", both: true },
+	{ a: "procurement_agent", b: "supervisor", d: "M 730 310 L 790 310", label: "call", at: [760, 302], anchor: "middle", both: true },
+	{ a: "floor_agent", b: "shop_tools", d: curve([365, 337], [455, 413]), label: "5 tools", at: [384, 386], anchor: "end" },
+	{ a: "procurement_agent", b: "shop_tools", d: curve([635, 337], [545, 413]), label: "9 tools", at: [616, 386] },
+	{ a: "shop_tools", b: "order_gate", d: "M 500 467 L 500 523", label: "every purchase", at: [512, 499] },
+	{
+		a: "floor_agent",
+		b: "dispatcher",
+		d: "M 300 283 C 300 215, 340 185, 405 185",
+		label: "stock missing · hands the case back",
+		at: [296, 205],
+		anchor: "end",
+		dashed: true,
+	},
+	{
+		a: "order_gate",
+		b: "shelf_watcher",
+		d: "M 595 550 L 1000 550 Q 1016 550 1016 534 L 1016 86 Q 1016 70 1000 70 L 595 70",
+		label: "stock arrives · the camera sees it and closes the case",
+		at: [800, 61],
+		anchor: "middle",
+		dashed: true,
+	},
+];
+const ARCH_STEPS: [number, string, string][] = [
+	[70, "1 · SEE", "the camera counts the shelf"],
+	[185, "2 · DECIDE", "fixed rules pick who must act"],
+	[310, "3 · TALK", "an agent rings that person"],
+	[440, "4 · ACT", "the agent uses its own tools"],
+	[550, "5 · GUARD", "no order without a spoken yes"],
+];
 
 function Architecture({ onClose, live }: { onClose: () => void; live: { from: AgentKey; to: AgentKey | null } | null }) {
 	const [selected, setSelected] = useState<AgentKey | null>(null);
@@ -516,7 +635,7 @@ function Architecture({ onClose, live }: { onClose: () => void; live: { from: Ag
 	useEffect(() => {
 		const el = boxRef.current;
 		if (!el) return;
-		const fit = () => setScale(Math.min(1.15, el.clientWidth / STAGE_W, el.clientHeight / ARCH_H));
+		const fit = () => setScale(Math.min(1.15, el.clientWidth / ARCH_W, el.clientHeight / ARCH_H));
 		fit();
 		const observer = new ResizeObserver(fit);
 		observer.observe(el);
@@ -529,7 +648,7 @@ function Architecture({ onClose, live }: { onClose: () => void; live: { from: Ag
 		<div className="absolute inset-0 z-20 flex flex-col" style={{ background: CANVAS_BG }}>
 			<div className="flex items-center gap-3 border-b border-white/[0.07] px-4 py-2.5">
 				<span className="text-[13px] font-semibold text-slate-200">Architecture</span>
-				<span className="text-[11px] text-slate-500">click any part to see what it does</span>
+				<span className="text-[11px] text-slate-500">read it top to bottom · click any part to see where it runs and what it can reach</span>
 				<button
 					type="button"
 					onClick={onClose}
@@ -542,30 +661,48 @@ function Architecture({ onClose, live }: { onClose: () => void; live: { from: Ag
 				<div ref={boxRef} className="relative min-w-0 flex-1 overflow-hidden">
 					<div
 						className="absolute left-1/2 top-1/2"
-						style={{ width: STAGE_W, height: ARCH_H, transform: `translate(-50%, -50%) scale(${scale})` }}
+						style={{ width: ARCH_W, height: ARCH_H, transform: `translate(-50%, -50%) scale(${scale})` }}
 					>
-						<svg width={STAGE_W} height={ARCH_H} className="absolute inset-0" aria-hidden>
-							{ARCH_LAYERS.map(([y, label]) => (
-								<g key={label}>
-									<line x1={20} x2={STAGE_W - 20} y1={y + NODE_H / 2 + 22} y2={y + NODE_H / 2 + 22} stroke="rgba(148,163,184,0.07)" />
-									<text x={24} y={y - NODE_H / 2 - 8} fill="#475569" fontSize="9" fontWeight="700" letterSpacing="1.6">
-										{label}
-									</text>
-								</g>
+						<svg width={ARCH_W} height={ARCH_H} className="absolute inset-0" aria-hidden>
+							<defs>
+								<marker id="arch-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+									<path d="M 0 0 L 10 5 L 0 10 z" fill="#6f8bc4" />
+								</marker>
+							</defs>
+							{/* The only parts that run outside the store. */}
+							<rect x={250} y={262} width={500} height={96} rx={16} fill="rgba(56,189,248,0.04)" stroke="rgba(56,189,248,0.35)" strokeDasharray="5 5" />
+							<text x={500} y={278} textAnchor="middle" fill="#38bdf8" fontSize="8.5" fontWeight="700" letterSpacing="1.6">
+								AGORA CLOUD
+							</text>
+							{ARCH_STEPS.map(([y, step, does]) => (
+								<text key={step} x={24} y={y - NODE_H / 2 - 8} fontSize="9">
+									<tspan fill="#94a3b8" fontWeight="700" letterSpacing="1.6">
+										{step}
+									</tspan>
+									<tspan fill="#7c8aa3" dx="8">
+										{does}
+									</tspan>
+								</text>
 							))}
-							{ARCH_WIRES.map(([a, b]) => {
-								const [top, bottom] = ARCH_POS[a][1] <= ARCH_POS[b][1] ? [a, b] : [b, a];
-								const on = isLive(a, b);
+							{ARCH_WIRES.map((wire) => {
+								const on = isLive(wire.a, wire.b);
 								return (
-									<path
-										key={`${a}-${b}`}
-										d={curve([ARCH_POS[top][0], ARCH_POS[top][1] + NODE_H / 2], [ARCH_POS[bottom][0], ARCH_POS[bottom][1] - NODE_H / 2])}
-										fill="none"
-										stroke={on && live ? META[live.from].c : "#2e4066"}
-										strokeWidth={on ? 2.5 : 1.6}
-										opacity={on ? 0.95 : 0.75}
-										className={on ? "pg-wire-active" : undefined}
-									/>
+									<g key={`${wire.a}-${wire.b}`}>
+										<path
+											d={wire.d}
+											fill="none"
+											stroke={on && live ? META[live.from].c : wire.dashed ? "#3b4f7a" : "#4a639a"}
+											strokeWidth={on ? 2.5 : 1.6}
+											strokeDasharray={wire.dashed && !on ? "4 5" : undefined}
+											opacity={on ? 0.95 : 0.85}
+											markerEnd="url(#arch-arrow)"
+											markerStart={wire.both ? "url(#arch-arrow)" : undefined}
+											className={on ? "pg-wire-active" : undefined}
+										/>
+										<text x={wire.at[0]} y={wire.at[1]} textAnchor={wire.anchor ?? "start"} fill={wire.dashed ? "#64748b" : "#8fa3c8"} fontSize="9.5" fontStyle={wire.dashed ? "italic" : undefined}>
+											{wire.label}
+										</text>
+									</g>
 								);
 							})}
 						</svg>
@@ -609,7 +746,7 @@ function Architecture({ onClose, live }: { onClose: () => void; live: { from: Ag
 					</div>
 				</div>
 				{detail ? (
-					<aside className="pg-in w-72 shrink-0 overflow-y-auto border-l border-white/[0.07] p-4">
+					<aside className="pg-in w-80 shrink-0 overflow-y-auto border-l border-white/[0.07] p-4">
 						<div className="flex items-center gap-2.5">
 							<span className="grid h-9 w-9 place-items-center rounded-lg text-white" style={{ background: `linear-gradient(135deg, ${detail.g[0]}, ${detail.g[1]})` }}>
 								<detail.Icon size={17} />
@@ -622,6 +759,15 @@ function Architecture({ onClose, live }: { onClose: () => void; live: { from: Ag
 							</div>
 						</div>
 						<p className="mt-3 text-[12px] font-semibold text-slate-200">{detail.role}</p>
+						<dl className="mt-2.5 space-y-1.5 rounded-lg border border-white/10 bg-white/[0.03] p-2.5">
+							{detail.where.map(([label, value]) => (
+								<div key={label} className="flex gap-2 text-[10.5px] leading-snug">
+									<dt className="w-[74px] shrink-0 font-semibold uppercase tracking-[0.06em] text-slate-500">{label}</dt>
+									<dd className="min-w-0 text-slate-200">{value}</dd>
+								</div>
+							))}
+						</dl>
+						<p className="mt-3 text-[9px] font-bold tracking-[0.12em] text-slate-500">WHAT IT DOES</p>
 						<ul className="mt-2 space-y-1.5">
 							{detail.points.map((point) => (
 								<li key={point} className="flex gap-2 text-[11.5px] leading-snug text-slate-400">
@@ -631,13 +777,25 @@ function Architecture({ onClose, live }: { onClose: () => void; live: { from: Ag
 							))}
 						</ul>
 						{detail.tools ? (
-							<div className="mt-3 flex flex-wrap gap-1">
-								{detail.tools.map((tool) => (
-									<code key={tool} className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[9.5px] text-slate-300">
-										{tool}
-									</code>
-								))}
+							<div className="mt-3">
+								<p className="text-[9px] font-bold tracking-[0.12em] text-slate-500">
+									{selected === "shop_tools" ? "ALL TOOLS" : `TOOLS IT CAN USE · ${detail.tools.length}`}
+								</p>
+								<ul className="mt-1.5 space-y-1">
+									{detail.tools.map(([tool, does]) => (
+										<li key={tool} className="flex flex-wrap items-baseline gap-x-1.5 text-[10.5px] leading-snug">
+											<code className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[9.5px] text-slate-200">{tool}</code>
+											<span className="text-slate-500">{does}</span>
+										</li>
+									))}
+								</ul>
 							</div>
+						) : null}
+						{detail.denied ? (
+							<p className="mt-2 rounded-lg border border-rose-400/30 bg-rose-400/[0.06] px-2.5 py-2 text-[10.5px] leading-snug text-rose-200">
+								<span className="font-bold tracking-[0.08em]">OUT OF SCOPE · </span>
+								{detail.denied}
+							</p>
 						) : null}
 						{detail.stack ? (
 							<div className="mt-3">

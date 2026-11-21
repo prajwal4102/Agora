@@ -12,6 +12,8 @@ export interface ShelfProduct {
   in_back_room: number
   refill_pending: boolean
   on_order: boolean
+  /** False when the agent is switched off for this product: counted, never acted on. */
+  enabled: boolean
 }
 
 export interface ShopOrder {
@@ -49,6 +51,8 @@ export interface AgoraSession {
 export interface ShopState {
   products: ShelfProduct[]
   budget_remaining: number
+  /** Which occasion the demand forecast treats as coming up. */
+  calendar?: { simulated: string | null; occasions: string[]; coming_up: string | null; days_away: number | null }
   /** Newest event id on the server; lower than ours means the demo was reset. */
   last_event_id: number
   agora?: { sessions: AgoraSession[] }
@@ -92,6 +96,14 @@ export const stepShelfCount = (product: string, delta: number) =>
     body: JSON.stringify({ product, delta, source: 'dashboard' }),
   })
 
+/** Switch the agent on or off for one product. */
+export const setProductEnabled = (product: string, enabled: boolean) =>
+  request<{ enabled: boolean }>('/products/enabled', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ product, enabled }),
+  })
+
 export const resetDemo = () => request<void>('/admin/reset', { method: 'POST' })
 
 /** What the shelf camera saw in one frame. */
@@ -118,3 +130,57 @@ export async function sendVisionFrame(frame: Blob): Promise<VisionResult> {
 
 /** Forget what the camera has seen, e.g. after rearranging the shelf. */
 export const resetVision = () => request<void>('/vision/reset', { method: 'POST' })
+
+/** Pretend an occasion is a few days away: a name, "none", or null for today's real date. */
+export const setCalendarOccasion = (occasion: string | null) =>
+  request<{ simulated: string | null }>('/calendar', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ occasion }),
+  })
+
+export interface SupplierQuote {
+  supplier: string
+  unit_price: number
+  total_for_quantity: number
+  delivery_hours: number
+  available_quantity: number
+  can_fill_order: boolean
+  within_budget: boolean
+  problem: string | null
+}
+
+/** Everything known about one product, for the details view. */
+export interface ProductDetails {
+  product: string
+  unit: string
+  enabled: boolean
+  on_shelf: number
+  shelf_capacity: number
+  low_threshold: number
+  is_low: boolean
+  in_back_room: number
+  total_in_store: number
+  pack_size: number
+  sold_per_day: number
+  hours_until_sold_out: number | null
+  forecast: {
+    upcoming_occasion: string | null
+    days_until_occasion: number | null
+    expected_uplift_percent: number
+    forecast_sold_per_day: number
+    recommended_order_quantity: number
+    normal_order_quantity: number
+    basis: string
+  }
+  budget_remaining: number
+  quotes: SupplierQuote[]
+  cheapest_that_can_fill: string | null
+  fastest_that_can_fill: string | null
+  orders: ShopOrder[]
+  refill_task: { bring_quantity: number } | null
+  callback: { who: string; in_minutes: number } | null
+}
+
+export const getProductDetails = (product: string) =>
+  request<ProductDetails>(`/products/details?product=${encodeURIComponent(product)}`)

@@ -15,7 +15,7 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-	title: "Asha · FreshMart stock agent",
+	title: "AgentsMart · the autonomous market, powered by agents",
 	description:
 		"A voice agent that watches the shelf, calls the right person and reorders on approval.",
 	icons: {

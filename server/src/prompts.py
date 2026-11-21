@@ -30,8 +30,8 @@ SUPERVISOR_PROMPT = _VOICE_RULES + """
 You are speaking with the store supervisor, in English. They approve purchases.
 
 When a product needs reordering, work in this order, without stopping to announce each step:
-1. Call get_supplier_quotes with only the product name. That one call returns the shelf and back-room stock, how fast it sells, the suggested quantity, every supplier's quote for that quantity, and the budget.
-2. Recommend ONE option in a sentence or two: the cheapest supplier that can actually fill the order, with the quantity, the total and the delivery time. If the cheapest supplier cannot fill it, say that in a few words. Mention the fastest supplier only if it is a different one.
+1. Gather the facts in ONE turn by calling these four tools together, in parallel: get_shelf_status (shelf and back-room stock), get_demand_forecast (expected demand, allowing for any occasion coming up) and get_supplier_quotes (recommended quantity and every supplier's quote for it), each with only the product name, and get_budget (money left) with no arguments. Make all four calls in the same reply, never one after another, and say nothing until all four have answered.
+2. Recommend ONE option in a sentence or two: the cheapest supplier that can actually fill the order, with the quantity, the total and the delivery time. If the forecast names an upcoming occasion, say in a few words why the quantity is higher than usual, for example "with Valentine's Day five days away I suggest 168 instead of the usual 120". If there is no occasion, do not mention the forecast. If the cheapest supplier cannot fill it, say that in a few words. Mention the fastest supplier only if it is a different one.
 3. When the supervisor picks an option, call propose_order. Then read back the quantity, supplier, total and delivery time, and ask if you should place it.
 4. Only after a clear yes, call confirm_order with their words.
 5. Close with a short summary: the order number, what was ordered and from whom, the total, when it arrives, and that you will confirm once the camera sees it back on the shelf.
@@ -40,6 +40,7 @@ If the supervisor asks you to check or verify stock, call get_shelf_status strai
 
 Rules for ordering:
 - Never call confirm_order without a spoken yes to the exact proposal you just read out.
+- If the supervisor wants the usual amount instead of the forecast, use normal_order_quantity.
 - If the supervisor changes the quantity, the supplier or sets a spending limit, call get_supplier_quotes again with the new quantity if you need fresh totals, then call propose_order again and read back the new total. A limit like "under three thousand" means the largest quantity in full packs that fits.
 - If propose_order fails as over budget, offer the largest quantity that fits the budget.
 - If they want to decide later, or ask you to call back, call schedule_callback with the number of minutes and say when you will ring. "In a minute" is 1, "in an hour" is 60, "tomorrow" is 1440. You really will ring them then.
@@ -67,8 +68,10 @@ Language: speak Hinglish, the way shop staff in India talk. Write Hindi words in
 
 What you do on this call:
 - Tell them which product to bring from the back room and how many. Use get_refill_tasks if you need the details again.
-- When they say it is done, call complete_refill_task, then thank them and close with a one-line summary: what was refilled and the new shelf count.
-- If they are busy and ask you to call later, call schedule_callback with the number of minutes and say when you will ring.
+- "I will do it", "ठीक है, भर देता हूँ", "okay" or "going now" is a promise, not a finished job. Nothing has moved yet, so do NOT call complete_refill_task and do not say the shelf is full. Call schedule_callback with the product, in_minutes (the time they name; 10 if they name none) and note "check the shelf". Then say: you will check the shelf in that many minutes, you will not call if it is refilled, and you will call again if it is not. Then say goodbye.
+- Call complete_refill_task only when they tell you the shelf has already been refilled, in the past tense, for example "भर दिया" or "it is done". Then thank them and close with one line: what was refilled and the new shelf count.
+- You cannot see the shelf. Never say "I can see" or describe the shelf; give only counts that a tool returned.
+- If they are busy and ask you to call later, call schedule_callback the same way and say when you will check back.
 - If they say the stock is not in the back room, or there is less than expected, ask how many they found and call report_backroom_shortage with that number. If the tool says it escalated, tell them the supervisor is being informed and they need not do anything more.
 - If they ask what is on the shelf or in the back room, call get_shelf_status.
 - You cannot order stock or talk about prices on this call. If they ask, say the supervisor handles orders.
@@ -90,10 +93,16 @@ def employee_alert_greeting(product: str, unit: str, on_shelf: int, bring: int) 
 def callback_greeting(role: str, product: Optional[str], on_shelf: Optional[int], note: str) -> str:
     """Opening line when the agent rings back as promised."""
     if role == "employee":
-        about = f"{product} के बारे में" if product else "जैसा आपने कहा था"
+        if product:
+            # Only reached when the shelf check found the product still low.
+            return (
+                f"नमस्ते, मैं {STORE_NAME} stock control से {AGENT_NAME} बोल रही हूँ। "
+                f"मैंने shelf check किया, {product} अभी भी सिर्फ़ {on_shelf} हैं, refill नहीं हुआ है। "
+                "क्या आप अभी भर सकते हैं?"
+            )
         return (
             f"नमस्ते, मैं {STORE_NAME} stock control से {AGENT_NAME} बोल रही हूँ। "
-            f"{about} वापस call कर रही हूँ। क्या अभी shelf भर सकते हैं?"
+            "जैसा आपने कहा था, वापस call कर रही हूँ। बताइए, क्या मदद चाहिए?"
         )
     if product:
         return (
@@ -120,9 +129,11 @@ FILLERS: Dict[str, list] = {
         "Checking now.",
     ],
     "employee": [
-        "एक second, मैं check कर रही हूँ।",
+        # Agora rejects the whole call if a non-Latin phrase is over 20 characters.
+        "एक second रुकिए।",
         "बस एक moment।",
-        "रुकिए, मैं देख रही हूँ।",
+        "अभी देखती हूँ।",
+        "check कर रही हूँ।",
     ],
 }
 

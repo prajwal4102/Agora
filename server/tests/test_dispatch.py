@@ -188,3 +188,57 @@ def test_the_call_is_captioned_line_by_line(shop):
     later = watcher.captions([Line("assistant", "Hello, this is Asha."), Line("user", "Check the suppliers."),
                               Line("user", NUDGE), Line("assistant", "Sri Lakshmi is cheapest.")])
     assert [c["text"] for c in later] == ["Sri Lakshmi is cheapest."]   # no repeats, and the push is not shown
+
+
+def test_a_switched_off_product_is_counted_but_never_acted_on(shop, dispatch):
+    dispatch.set_enabled("water bottle", False)
+    result = dispatch.update_shelf("water bottle", 1)
+    assert result["action"] == "none"
+    assert result["on_shelf"] == 1  # still counted
+    assert dispatch.pending_call("employee") is None
+    assert dispatch.open_refill_tasks()["count"] == 0
+    row = next(p for p in dispatch.snapshot()["products"] if p["product"] == "water bottle")
+    assert row["enabled"] is False
+    # Other products are unaffected.
+    assert dispatch.update_shelf("cola can", 2)["action"] == "call_supervisor"
+
+
+def test_switching_a_low_product_back_on_acts_at_once(shop, dispatch):
+    dispatch.set_enabled("water bottle", False)
+    dispatch.update_shelf("water bottle", 1)
+    result = dispatch.set_enabled("water bottle", True)
+    assert result["action"] == "call_employee"
+    assert dispatch.pending_call("employee")["product"] == "water bottle"
+
+
+def _make_callbacks_due(shop):
+    with shop._connect() as conn:
+        conn.execute("UPDATE callbacks SET due_at=0")
+
+
+def test_a_promise_to_refill_is_checked_and_stays_quiet_if_done(shop, dispatch):
+    call = dispatch.update_shelf("water bottle", 3)
+    dispatch.set_call_status(call["call_id"], "answered")
+    shop.schedule_callback("water bottle", 10, "check the shelf", role="employee")
+    dispatch.set_call_status(call["call_id"], "ended")
+    # Nothing moved yet: the promise did not refill the shelf.
+    assert shop.shelf_status("water bottle")["on_shelf"] == 3
+    assert dispatch.update_shelf("water bottle", 3)["action"] == "none"  # no second call meanwhile
+
+    dispatch.update_shelf("water bottle", 12)  # the employee refills it
+    _make_callbacks_due(shop)
+    assert dispatch.fire_due_callbacks() == []
+    assert dispatch.pending_call("employee") is None
+    assert "No call needed" in shop.list_events()[-1]["title"]
+    assert dispatch.open_refill_tasks()["count"] == 0
+
+
+def test_a_promise_to_refill_that_is_not_kept_rings_again(shop, dispatch):
+    call = dispatch.update_shelf("water bottle", 3)
+    dispatch.set_call_status(call["call_id"], "answered")
+    shop.schedule_callback("water bottle", 10, "check the shelf", role="employee")
+    dispatch.set_call_status(call["call_id"], "ended")
+    _make_callbacks_due(shop)
+    placed = dispatch.fire_due_callbacks()
+    assert len(placed) == 1 and placed[0]["role"] == "employee"
+    assert "refill नहीं हुआ" in dispatch.pending_call("employee")["greeting"]

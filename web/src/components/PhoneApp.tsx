@@ -140,7 +140,7 @@ export default function PhoneApp() {
 			<Screen>
 				<h1 className="text-2xl font-semibold tracking-tight">Who is using this phone?</h1>
 				<p className="mt-2 text-sm text-muted-foreground">
-					Asha, the stock agent, will ring this phone when it needs you.
+					Asha, the AgentsMart voice agent, will ring this phone when it needs you.
 				</p>
 				<div className="mt-8 flex w-full flex-col gap-3">
 					{(Object.keys(ROLES) as CallRole[]).map((key) => (
@@ -191,7 +191,7 @@ export default function PhoneApp() {
 					<PhoneCall className="h-12 w-12 text-primary" aria-hidden />
 				</div>
 				<h1 className="mt-6 text-3xl font-semibold tracking-tight">Asha</h1>
-				<p className="mt-1 text-sm text-muted-foreground">FreshMart stock control</p>
+				<p className="mt-1 text-sm text-muted-foreground">AgentsMart · FreshMart stock control</p>
 				<p className="mt-4 max-w-xs text-sm text-foreground/80">About: {incoming.reason}</p>
 				<div className="mt-10 flex w-full justify-center gap-10">
 					<RoundButton label="Decline" tone="decline" onClick={decline}>

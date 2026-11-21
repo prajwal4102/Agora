@@ -17,10 +17,40 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+import seasons
+
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.getenv("SHOP_DB_PATH", os.path.join(_BASE_DIR, "data", "shop.db"))
 
 PROPOSAL_TTL_SECONDS = 10 * 60
+# A proposal cannot be confirmed in the same breath it was made: the agent has
+# to read it out and hear an answer first, and that takes at least this long.
+MIN_READOUT_SECONDS = 4.0
+
+# The supervisor's own words must say yes, and must not also say no.
+_YES_WORDS = {
+    "yes", "yeah", "yep", "yup", "ya", "ok", "okay", "sure", "confirm", "confirmed", "approve",
+    "approved", "proceed", "place", "correct", "right", "fine", "done", "agreed",
+    "haan", "han", "theek", "thik", "kardo", "हाँ", "हां", "जी", "ठीक",
+}
+_YES_PHRASES = ("go ahead", "do it", "kar do", "कर दो", "sounds good")
+_NO_WORDS = {
+    "no", "not", "dont", "cancel", "wait", "stop", "later", "hold", "never",
+    "nahi", "nahin", "mat", "नहीं", "मत", "रुको",
+}
+
+
+def _approval_problem(phrase: str) -> Optional[str]:
+    """Why these words do not count as approval, or None if they do."""
+    lowered = phrase.lower().replace("\u2019", "").replace("'", "")
+    words = set("".join(ch if ch.isalnum() else " " for ch in lowered).split())
+    says_yes = bool(words & _YES_WORDS) or any(p in lowered for p in _YES_PHRASES)
+    says_no = bool(words & _NO_WORDS)
+    if says_no:
+        return "The supervisor's words include a no or a wait. Do not place the order. Ask what they want changed."
+    if not says_yes:
+        return "Those words are not a clear yes. Ask the supervisor plainly: shall I place this order, yes or no?"
+    return None
 COVER_DAYS = 3  # how many days of sales a suggested order should cover
 
 _lock = threading.Lock()
@@ -367,7 +397,7 @@ def sales_rate(product: str) -> Dict[str, Any]:
         row = find_product(conn, product)
     daily = row["daily_sales"]
     in_store = row["shelf_qty"] + row["backroom_qty"]
-    packs = -(-(daily * COVER_DAYS) // row["pack_size"])  # round up to whole packs
+    forecast = _forecast(row)
     return {
         "ok": True,
         "product": row["name"],
@@ -376,9 +406,63 @@ def sales_rate(product: str) -> Dict[str, Any]:
         "total_in_store": in_store,
         "hours_until_sold_out": round(in_store / daily * 12, 1) if daily else None,
         "pack_size": row["pack_size"],
-        "suggested_order_quantity": packs * row["pack_size"],
-        "suggestion_basis": f"{COVER_DAYS} days of sales, rounded up to full packs of {row['pack_size']}",
+        "suggested_order_quantity": forecast["recommended_order_quantity"],
+        "normal_order_quantity": forecast["normal_order_quantity"],
+        "suggestion_basis": forecast["basis"],
     }
+
+
+def _whole_packs(units: float, pack_size: int) -> int:
+    """Round a quantity up to full packs."""
+    return int(-(-units // pack_size) * pack_size)
+
+
+def _forecast(row: sqlite3.Row) -> Dict[str, Any]:
+    """Expected demand for a product over the days an order should cover.
+    Normal sales, lifted when an occasion that moves this product is close."""
+    daily, pack = row["daily_sales"], row["pack_size"]
+    normal_qty = _whole_packs(daily * COVER_DAYS, pack)
+    lift = seasons.uplift_for(row["name"])
+    out: Dict[str, Any] = {
+        "product": row["name"],
+        "unit": row["unit"],
+        "normal_sold_per_day": daily,
+        "normal_order_quantity": normal_qty,
+        "cover_days": COVER_DAYS,
+        "pack_size": pack,
+    }
+    if not lift:
+        out.update({
+            "upcoming_occasion": None,
+            "expected_uplift_percent": 0,
+            "forecast_sold_per_day": daily,
+            "recommended_order_quantity": normal_qty,
+            "basis": f"{COVER_DAYS} days of normal sales, rounded up to full packs of {pack}",
+            "say": f"No occasion is coming up for {row['name']}, so the normal quantity of {normal_qty} is right.",
+        })
+        return out
+    forecast_daily = round(daily * (1 + lift["percent"] / 100))
+    qty = _whole_packs(forecast_daily * COVER_DAYS, pack)
+    when = "today" if lift["days_away"] == 0 else f"{lift['days_away']} days away"
+    out.update({
+        "upcoming_occasion": lift["name"],
+        "days_until_occasion": lift["days_away"],
+        "expected_uplift_percent": lift["percent"],
+        "forecast_sold_per_day": forecast_daily,
+        "recommended_order_quantity": qty,
+        "extra_over_normal": qty - normal_qty,
+        "basis": (f"{COVER_DAYS} days of sales at {lift['percent']} percent above normal for"
+                  f" {lift['name']}, rounded up to full packs of {pack}"),
+        "say": (f"{lift['name']} is {when} and {row['name']} sells about {lift['percent']} percent more"
+                f" then, so order {qty} instead of the usual {normal_qty}."),
+    })
+    return out
+
+
+def demand_forecast(product: str) -> Dict[str, Any]:
+    with _connect() as conn:
+        row = find_product(conn, product)
+    return {"ok": True, **_forecast(row)}
 
 
 def supplier_quotes(product: str, quantity: Optional[int] = None) -> Dict[str, Any]:
@@ -424,6 +508,8 @@ def supplier_quotes(product: str, quantity: Optional[int] = None) -> Dict[str, A
         "in_back_room": row["backroom_qty"],
         "sold_per_day": sales["sold_per_day"],
         "suggested_order_quantity": sales["suggested_order_quantity"],
+        "normal_order_quantity": sales["normal_order_quantity"],
+        "suggestion_basis": sales["suggestion_basis"],
         "quantity": quantity,
         "budget_remaining": budget,
         "quotes": quotes,
@@ -473,6 +559,21 @@ def propose_order(product: str, supplier: str, quantity: int) -> Dict[str, Any]:
                 total=total, budget_remaining=budget,
                 max_affordable_quantity=int(budget // price["unit_price"]),
             )
+        on_order = conn.execute(
+            "SELECT o.id, o.quantity, o.eta_at, s.name AS supplier FROM orders o"
+            " JOIN suppliers s ON s.id=o.supplier_id"
+            " WHERE o.product_id=? AND o.status='placed' ORDER BY o.id DESC LIMIT 1",
+            (prod["id"],),
+        ).fetchone()
+        if on_order:
+            hours = max(0, round((on_order["eta_at"] - time.time()) / 3600))
+            raise ShopError(
+                "ALREADY_ON_ORDER",
+                f"Order number {on_order['id']} for {on_order['quantity']} {prod['name']} from"
+                f" {on_order['supplier']} is already placed and arrives in about {hours} hours."
+                " A second order cannot be placed until it is delivered.",
+                order_number=on_order["id"],
+            )
         # A new proposal for the same product replaces any earlier one.
         conn.execute(
             "UPDATE orders SET status='superseded' WHERE product_id=? AND status='proposed'",
@@ -496,8 +597,9 @@ def propose_order(product: str, supplier: str, quantity: int) -> Dict[str, Any]:
         "total": total,
         "delivery_hours": supp["lead_time_hours"],
         "budget_left_after": round(budget - total, 2),
-        "next_step": "Read the quantity, supplier, total and delivery time to the supervisor"
-                     " and wait for a clear yes before calling confirm_order.",
+        "next_step": "Read the quantity, supplier, total and delivery time to the supervisor,"
+                     " then stop and wait for their answer. Call confirm_order only in a later"
+                     " turn, after they clearly say yes, and pass their exact words.",
     }
 
 
@@ -508,6 +610,9 @@ def confirm_order(proposal_id: int, approval_phrase: str) -> Dict[str, Any]:
             "APPROVAL_REQUIRED",
             "No approval was given. Ask the supervisor to approve the order first.",
         )
+    problem = _approval_problem(phrase)
+    if problem:
+        raise ShopError("APPROVAL_NOT_CLEAR", problem, heard=phrase[:200])
     with _lock, _connect() as conn:
         order = conn.execute("SELECT * FROM orders WHERE id=?", (proposal_id,)).fetchone()
         if order is None:
@@ -519,14 +624,27 @@ def confirm_order(proposal_id: int, approval_phrase: str) -> Dict[str, Any]:
                 "PROPOSAL_REPLACED",
                 "That proposal was replaced by a newer one. Use the latest proposal.",
             )
-        if time.time() - order["created_at"] > PROPOSAL_TTL_SECONDS:
+        age = time.time() - order["created_at"]
+        if age > PROPOSAL_TTL_SECONDS:
             raise ShopError("PROPOSAL_EXPIRED", "That proposal is too old. Propose the order again.")
+        if age < MIN_READOUT_SECONDS:
+            raise ShopError(
+                "NOT_READ_OUT",
+                "This proposal was made a moment ago, so the supervisor cannot have heard it yet."
+                " Read the quantity, supplier and total aloud, wait for their answer, then confirm.",
+            )
         price = conn.execute(
             "SELECT * FROM supplier_prices WHERE supplier_id=? AND product_id=?",
             (order["supplier_id"], order["product_id"]),
         ).fetchone()
-        if price["available_qty"] < order["quantity"]:
+        if price is None or price["available_qty"] < order["quantity"]:
             raise ShopError("SUPPLIER_SHORT", "The supplier no longer has enough stock. Check quotes again.")
+        if abs(price["unit_price"] - order["unit_price"]) > 0.005:
+            raise ShopError(
+                "PRICE_CHANGED",
+                "The supplier's price changed after this was read out. Propose the order again"
+                " and read the new total.",
+            )
         budget = _budget(conn)
         if order["total"] > budget:
             raise ShopError("OVER_BUDGET", "The budget changed and no longer covers this order.",
@@ -613,4 +731,11 @@ def snapshot() -> Dict[str, Any]:
     with _connect() as conn:
         products = [_shelf_view(r) for r in conn.execute("SELECT * FROM products ORDER BY id")]
         budget = _budget(conn)
-    return {"products": products, "budget_remaining": budget, **order_status()}
+    occasion = seasons.coming_up()
+    calendar = {
+        "simulated": seasons.simulated(),
+        "occasions": seasons.names(),
+        "coming_up": occasion["name"] if occasion else None,
+        "days_away": occasion["days_away"] if occasion else None,
+    }
+    return {"products": products, "budget_remaining": budget, "calendar": calendar, **order_status()}

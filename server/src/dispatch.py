@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS calls (
     answered_at REAL,
     ended_at REAL
 );
+-- Products the store has switched off: still counted, never acted on.
+-- Kept by name and left alone by a demo reset, so a switch stays where it was put.
+CREATE TABLE IF NOT EXISTS watch_off (
+    product TEXT PRIMARY KEY
+);
 """
 
 
@@ -189,17 +194,30 @@ def _log_call_summary(call_id: int, role: str) -> None:
 
 def fire_due_callbacks() -> List[Dict[str, Any]]:
     """Ring back anyone whose promised callback has fallen due. Called on a
-    timer by the server. A callback waits if that person is already on a call."""
+    timer by the server. A callback waits if that person is already on a call.
+
+    A callback to the employee about a product is a shelf check: if the shelf
+    is above its threshold when it falls due, the job is done and nobody is
+    rung. Only a shelf that is still low gets a second call."""
     placed: List[Dict[str, Any]] = []
+    refilled: List[Any] = []
     with _lock, _connect() as conn:
         _expire_stale(conn)
         due = conn.execute(
-            "SELECT c.*, p.name AS product, p.shelf_qty FROM callbacks c"
+            "SELECT c.*, p.name AS product, p.shelf_qty, p.shelf_threshold FROM callbacks c"
             " LEFT JOIN products p ON p.id=c.product_id"
             " WHERE c.status='pending' AND c.due_at <= ? ORDER BY c.due_at", (time.time(),),
         ).fetchall()
         ready = []
         for row in due:
+            if row["role"] == "employee" and row["product"] and row["shelf_qty"] > row["shelf_threshold"]:
+                conn.execute("UPDATE callbacks SET status='done' WHERE id=?", (row["id"],))
+                conn.execute(
+                    "UPDATE refill_tasks SET status='done', done_at=? WHERE product_id=? AND status='open'",
+                    (time.time(), row["product_id"]),
+                )
+                refilled.append(row)
+                continue
             busy = conn.execute(
                 "SELECT 1 FROM calls WHERE role=? AND status IN ('ringing','answered')", (row["role"],)
             ).fetchone()
@@ -207,9 +225,17 @@ def fire_due_callbacks() -> List[Dict[str, Any]]:
                 continue
             conn.execute("UPDATE callbacks SET status='done' WHERE id=?", (row["id"],))
             ready.append(row)
+    for row in refilled:
+        log_event("decision",
+                  f"Checked the {row['product']} shelf as promised: refilled, {row['shelf_qty']} on the shelf. No call needed.",
+                  {"product": row["product"], "on_shelf": row["shelf_qty"]},
+                  agent="dispatcher", to="shelf_watcher")
     for row in ready:
         role, product = row["role"], row["product"]
-        log_event("decision", f"Callback is due: ringing the {role} back",
+        still_low = role == "employee" and product
+        log_event("decision",
+                  f"Checked the {product} shelf as promised: still {row['shelf_qty']}. Ringing the employee again."
+                  if still_low else f"Callback is due: ringing the {role} back",
                   {"product": product, "note": row["note"]},
                   agent="dispatcher", to=VOICE_AGENT[role])
         placed.append(place_call(
@@ -217,6 +243,29 @@ def fire_due_callbacks() -> List[Dict[str, Any]]:
             prompts.callback_greeting(role, product, row["shelf_qty"], row["note"]),
         ))
     return placed
+
+
+# --------------------------------------------------------------------------- #
+# Per-product switch: is the agent allowed to act on this product?
+# --------------------------------------------------------------------------- #
+def _is_off(conn: Any, name: str) -> bool:
+    return conn.execute("SELECT 1 FROM watch_off WHERE product=?", (name,)).fetchone() is not None
+
+
+def set_enabled(product: str, enabled: bool) -> Dict[str, Any]:
+    """Switch the agent on or off for one product. Off: the shelf is still
+    counted, but a low count places no call and creates no refill task.
+    Switching back on acts at once if the product is low right now."""
+    with _lock, _connect() as conn:
+        prod = find_product(conn, product)
+        if enabled:
+            conn.execute("DELETE FROM watch_off WHERE product=?", (prod["name"],))
+        else:
+            conn.execute("INSERT OR IGNORE INTO watch_off (product) VALUES (?)", (prod["name"],))
+    log_event("system", f"Agent switched {'on' if enabled else 'off'} for {prod['name']}",
+              {"product": prod["name"], "enabled": enabled})
+    action = triage(prod["name"]) if enabled else {"action": "none"}
+    return {"ok": True, "product": prod["name"], "enabled": enabled, **action}
 
 
 def _has_live_call(conn: Any, product_id: int) -> bool:
@@ -376,6 +425,8 @@ def triage(product: str) -> Dict[str, Any]:
         prod = find_product(conn, product)
         if prod["shelf_qty"] > prod["shelf_threshold"]:
             return {"action": "none", "why": "shelf is above its threshold"}
+        if _is_off(conn, prod["name"]):
+            return {"action": "none", "why": "the agent is switched off for this product"}
         if _has_live_call(conn, prod["id"]):
             return {"action": "none", "why": "a call about this product is already in progress"}
         open_task = conn.execute(
@@ -424,6 +475,54 @@ def triage(product: str) -> Dict[str, Any]:
     return {"action": "call_supervisor", **call}
 
 
+def product_details(product: str) -> Dict[str, Any]:
+    """Everything known about one product, for the dashboard's details view:
+    stock, sales, the demand forecast, supplier quotes and what is in motion."""
+    sales = shop_db.sales_rate(product)
+    name = sales["product"]
+    forecast = shop_db.demand_forecast(name)
+    quotes = shop_db.supplier_quotes(name)
+    orders = shop_db.order_status(name)["orders"]
+    with _lock, _connect() as conn:
+        prod = find_product(conn, name)
+        task = conn.execute(
+            "SELECT quantity FROM refill_tasks WHERE product_id=? AND status='open'", (prod["id"],)
+        ).fetchone()
+        callback = conn.execute(
+            "SELECT role, due_at FROM callbacks WHERE product_id=? AND status='pending' ORDER BY due_at LIMIT 1",
+            (prod["id"],),
+        ).fetchone()
+        enabled = not _is_off(conn, name)
+    return {
+        "product": name,
+        "unit": prod["unit"],
+        "enabled": enabled,
+        "on_shelf": prod["shelf_qty"],
+        "shelf_capacity": prod["shelf_capacity"],
+        "low_threshold": prod["shelf_threshold"],
+        "is_low": prod["shelf_qty"] <= prod["shelf_threshold"],
+        "in_back_room": prod["backroom_qty"],
+        "total_in_store": sales["total_in_store"],
+        "pack_size": prod["pack_size"],
+        "sold_per_day": sales["sold_per_day"],
+        "hours_until_sold_out": sales["hours_until_sold_out"],
+        "forecast": {k: forecast.get(k) for k in (
+            "upcoming_occasion", "days_until_occasion", "expected_uplift_percent",
+            "forecast_sold_per_day", "recommended_order_quantity", "normal_order_quantity", "basis",
+        )},
+        "budget_remaining": quotes["budget_remaining"],
+        "quotes": quotes["quotes"],
+        "cheapest_that_can_fill": quotes["cheapest_that_can_fill"],
+        "fastest_that_can_fill": quotes["fastest_that_can_fill"],
+        "orders": orders,
+        "refill_task": {"bring_quantity": task["quantity"]} if task else None,
+        "callback": {
+            "who": callback["role"],
+            "in_minutes": max(0, round((callback["due_at"] - time.time()) / 60)),
+        } if callback else None,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Dashboard snapshot
 # --------------------------------------------------------------------------- #
@@ -444,11 +543,13 @@ def snapshot() -> Dict[str, Any]:
                 " WHERE o.status='placed'"
             )
         }
+        off = {r["product"] for r in conn.execute("SELECT product FROM watch_off")}
     tasks = open_refill_tasks()["tasks"]
     refilling = {t["product"] for t in tasks}
     for product in data["products"]:
         product["refill_pending"] = product["product"] in refilling
         product["on_order"] = product["product"] in on_order
+        product["enabled"] = product["product"] not in off
     # Lets a dashboard notice that the demo was reset from somewhere else.
     data["last_event_id"] = shop_db.last_event_id()
     data["calls"] = [_call_view(c) for c in calls]

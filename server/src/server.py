@@ -42,6 +42,7 @@ import threading
 
 import call_watch
 import dispatch
+import seasons
 import shop_db
 import telephony
 from vision import shelf_vision
@@ -251,6 +252,19 @@ class ShelfUpdateRequest(BaseModel):
     source: str = "manual"
 
 
+class ProductSwitchRequest(BaseModel):
+    """Request body for POST /products/enabled — switch the agent on or off for a product"""
+    product: str
+    enabled: bool
+
+
+class CalendarRequest(BaseModel):
+    """Request body for POST /calendar — pretend an occasion is a few days away.
+    occasion: a name from the calendar, "none" for a plain week, or null to
+    follow today's real date."""
+    occasion: Optional[str] = None
+
+
 class StopAgentRequest(BaseModel):
     """Request body for POST /stopAgent"""
     agentId: str
@@ -415,6 +429,35 @@ async def update_shelf(request: ShelfUpdateRequest):
         return {"code": 0, "data": data}
     except shop_db.ShopError as e:
         raise HTTPException(status_code=400, detail=e.message)
+
+
+@router.post("/products/enabled")
+async def set_product_enabled(request: ProductSwitchRequest):
+    """Switch the agent on or off for one product. Off: counted, never acted on."""
+    try:
+        return {"code": 0, "data": dispatch.set_enabled(request.product, request.enabled)}
+    except shop_db.ShopError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+
+
+@router.get("/products/details")
+async def product_details(product: str = Query(min_length=1)):
+    """Stock, sales, forecast, supplier quotes and open work for one product."""
+    try:
+        return {"code": 0, "data": dispatch.product_details(product)}
+    except shop_db.ShopError as e:
+        raise HTTPException(status_code=404, detail=e.message)
+
+
+@router.post("/calendar")
+async def set_calendar(request: CalendarRequest):
+    """Choose which occasion the demand forecast should treat as coming up."""
+    try:
+        chosen = seasons.set_simulated(request.occasion)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    shop_db.log_event("system", "Store calendar: " + (chosen or "today's date"), {"occasion": chosen})
+    return {"code": 0, "data": {"simulated": chosen}}
 
 
 @router.post("/vision/frame")

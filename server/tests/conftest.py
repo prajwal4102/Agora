@@ -30,6 +30,7 @@ def shop(tmp_path, monkeypatch):
     import shop_db
 
     monkeypatch.setattr(shop_db, "DB_PATH", str(tmp_path / "shop.db"))
+    monkeypatch.setattr(shop_db, "MIN_READOUT_SECONDS", 0)  # tests do not wait for a read-out
     shop_db.init_db(reset=True)
     import dispatch
 

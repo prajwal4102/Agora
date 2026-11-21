@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AgentPlayground } from "@/components/AgentPlayground";
 import { CameraPanel } from "@/components/CameraPanel";
+import { ProductDetailsModal } from "@/components/ProductDetailsModal";
 import {
 	type ShelfProduct,
 	type ShopCall,
@@ -23,6 +24,8 @@ import {
 	getShopEvents,
 	getShopState,
 	resetDemo,
+	setCalendarOccasion,
+	setProductEnabled,
 	stepShelfCount,
 } from "@/services/shop";
 
@@ -78,6 +81,13 @@ export default function Dashboard() {
 		void refresh();
 	};
 
+	const [detailsFor, setDetailsFor] = useState<string | null>(null);
+
+	const toggleAgent = async (product: ShelfProduct) => {
+		await setProductEnabled(product.product, !product.enabled).catch(() => {});
+		void refresh();
+	};
+
 	const reset = async () => {
 		await resetDemo().catch(() => {});
 		lastEventId.current = 0;
@@ -95,14 +105,36 @@ export default function Dashboard() {
 						<Bot className="h-5 w-5" aria-hidden />
 					</span>
 					<div>
-						<h1 className="text-base font-semibold leading-tight">Asha · FreshMart stock agent</h1>
-						<p className="text-xs text-muted-foreground">
-							Watches the shelf, decides who to call, and reorders on approval
-						</p>
+						<h1 className="text-xl font-black leading-tight tracking-tight">
+							<span className="bg-gradient-to-r from-sky-400 to-emerald-400 bg-clip-text text-transparent">Agents</span>
+							Mart
+						</h1>
+						<p className="text-xs text-muted-foreground">The autonomous market, powered by agents</p>
 					</div>
 				</div>
 				<div className="flex items-center gap-4 text-sm">
 					{offline ? <span className="text-destructive">Backend unreachable</span> : null}
+					<label className="flex items-center gap-1.5 text-xs text-muted-foreground" title="The demand forecast orders more before an occasion. Pick one to see it on any day.">
+						Coming up
+						<select
+							value={state?.calendar?.simulated ?? "auto"}
+							onChange={async (e) => {
+								await setCalendarOccasion(e.target.value === "auto" ? null : e.target.value).catch(() => {});
+								void refresh();
+							}}
+							className="rounded-md border border-border bg-card px-2 py-1.5 text-xs text-foreground"
+						>
+							<option value="auto">
+								Today's calendar{state?.calendar && !state.calendar.simulated && state.calendar.coming_up ? ` · ${state.calendar.coming_up}` : ""}
+							</option>
+							<option value="none">Nothing special</option>
+							{(state?.calendar?.occasions ?? []).map((name) => (
+								<option key={name} value={name}>
+									{name}
+								</option>
+							))}
+						</select>
+					</label>
 					<span className="text-muted-foreground">
 						Budget left{" "}
 						<strong className="text-foreground">{state ? rupees(state.budget_remaining) : "…"}</strong>
@@ -125,9 +157,13 @@ export default function Dashboard() {
 				<section className="flex min-h-0 flex-col gap-3 overflow-y-auto">
 					<SectionTitle icon={<ScanLine className="h-4 w-4" aria-hidden />}>Shelf</SectionTitle>
 					<CameraPanel />
-					{state?.products.map((product) => (
-						<ShelfCard key={product.product} product={product} onChange={changeShelf} />
-					))}
+					{state?.products.length ? (
+						<ul className="shrink-0 divide-y divide-border rounded-xl border border-border bg-card">
+							{state.products.map((product) => (
+								<ShelfRow key={product.product} product={product} onChange={changeShelf} onToggle={toggleAgent} onOpen={setDetailsFor} />
+							))}
+						</ul>
+					) : null}
 					<SectionTitle icon={<PhoneCall className="h-4 w-4" aria-hidden />}>Calls</SectionTitle>
 					<CallPanel call={liveCall} recent={state?.calls ?? []} />
 					<SectionTitle icon={<PackageCheck className="h-4 w-4" aria-hidden />}>Orders</SectionTitle>
@@ -135,8 +171,15 @@ export default function Dashboard() {
 				</section>
 
 				<section className="flex min-h-0 flex-col gap-3">
-					<div className="flex shrink-0 items-center justify-between">
-						<SectionTitle icon={<Bot className="h-4 w-4" aria-hidden />}>Agent playground</SectionTitle>
+					<div className="flex shrink-0 items-baseline justify-between">
+						<h2 className="flex items-baseline gap-2.5">
+							<span className="bg-gradient-to-r from-sky-400 to-emerald-400 bg-clip-text text-[26px] font-black leading-none tracking-tight text-transparent">
+								Agent Playground
+							</span>
+							<span className="text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
+								every hand-off, live
+							</span>
+						</h2>
 						<button
 							type="button"
 							onClick={() => setShowLog((value) => !value)}
@@ -149,6 +192,9 @@ export default function Dashboard() {
 				</section>
 
 			</div>
+			{detailsFor ? (
+				<ProductDetailsModal product={detailsFor} refreshKey={state?.last_event_id ?? 0} onClose={() => setDetailsFor(null)} />
+			) : null}
 		</div>
 	);
 }
@@ -162,64 +208,97 @@ function SectionTitle({ icon, children }: { icon: React.ReactNode; children: Rea
 	);
 }
 
-function ShelfCard({
+/** One product on one line: name, level bar, count with its step buttons, status. */
+function ShelfRow({
 	product,
 	onChange,
+	onToggle,
+	onOpen,
 }: {
 	product: ShelfProduct;
 	onChange: (product: ShelfProduct, step: number) => void;
+	onToggle: (product: ShelfProduct) => void;
+	onOpen: (product: string) => void;
 }) {
-	const pct = (product.on_shelf / product.shelf_capacity) * 100;
+	const on = product.enabled !== false;
+	const pct = Math.min(100, (product.on_shelf / product.shelf_capacity) * 100);
 	const thresholdPct = (product.low_threshold / product.shelf_capacity) * 100;
-	const status = product.on_order
+	const status = !on
+		? { label: "Agent off", tone: "text-muted-foreground border-border" }
+		: product.on_order
 		? { label: "On order", tone: "text-sky-400 border-sky-400/40" }
 		: product.refill_pending
-			? { label: "Refill requested", tone: "text-amber-400 border-amber-400/40" }
+			? { label: "Refill", tone: "text-amber-400 border-amber-400/40" }
 			: product.is_low
 				? { label: "Low", tone: "text-red-400 border-red-400/40" }
 				: { label: "OK", tone: "text-emerald-400 border-emerald-400/40" };
 	return (
-		<article className="rounded-xl border border-border bg-card p-4">
-			<div className="flex items-start justify-between gap-3">
-				<div>
-					<h3 className="text-sm font-medium">{title(product.product)}</h3>
-					<p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
-						<Boxes className="h-3.5 w-3.5" aria-hidden />
-						Back room: {product.in_back_room}
-					</p>
+		<li className="flex items-center gap-2.5 px-3 py-2">
+			<button
+				type="button"
+				role="switch"
+				aria-checked={on}
+				aria-label={`Agent for ${product.product}`}
+				title={on ? "Agent is on for this product. Click to switch it off." : "Agent is off: counted, but no calls. Click to switch it on."}
+				onClick={() => onToggle(product)}
+				className={`relative h-[18px] w-8 shrink-0 rounded-full transition-colors ${on ? "bg-emerald-500" : "bg-muted-foreground/30"}`}
+			>
+				<span
+					className={`absolute top-[2px] h-[14px] w-[14px] rounded-full bg-white transition-all ${on ? "left-[16px]" : "left-[2px]"}`}
+					aria-hidden
+				/>
+			</button>
+			<div className={`min-w-0 flex-1 transition-opacity ${on ? "" : "opacity-45"}`}>
+				<div className="flex items-baseline justify-between gap-2">
+					<h3 className="min-w-0 truncate text-[13px] font-medium">
+						<button
+							type="button"
+							onClick={() => onOpen(product.product)}
+							title="See stock, sales, forecast and suppliers"
+							className="max-w-full truncate rounded underline-offset-4 hover:text-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+						>
+							{title(product.product)}
+						</button>
+					</h3>
+					<span
+						className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground"
+						title={`Back room: ${product.in_back_room} · low at ${product.low_threshold}`}
+					>
+						<Boxes className="h-3 w-3" aria-hidden />
+						{product.in_back_room} in back
+					</span>
 				</div>
-				<span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${status.tone}`}>
-					{status.label}
-				</span>
+				<div className="relative mt-1.5 h-1.5 rounded-full bg-muted">
+					<div
+						className={`h-full rounded-full transition-all ${!on ? "bg-slate-500" : product.is_low ? "bg-red-500" : "bg-emerald-500"}`}
+						style={{ width: `${pct}%` }}
+					/>
+					<span
+						className="absolute top-[-3px] h-3 w-px bg-foreground/60"
+						style={{ left: `${thresholdPct}%` }}
+						aria-hidden
+					/>
+				</div>
 			</div>
-			<div className="mt-3 flex items-center gap-3">
+			<div className="flex shrink-0 items-center gap-1">
 				<StepButton label={`Remove one ${product.product}`} onClick={() => onChange(product, -1)}>
-					<Minus className="h-4 w-4" aria-hidden />
+					<Minus className="h-3.5 w-3.5" aria-hidden />
 				</StepButton>
-				<div className="min-w-0 flex-1">
-					<div className="flex items-baseline justify-between">
-						<span className="text-2xl font-semibold tabular-nums">{product.on_shelf}</span>
-						<span className="text-xs text-muted-foreground">
-							of {product.shelf_capacity} · low at {product.low_threshold}
-						</span>
-					</div>
-					<div className="relative mt-1.5 h-2 rounded-full bg-muted">
-						<div
-							className={`h-full rounded-full transition-all ${product.is_low ? "bg-red-500" : "bg-emerald-500"}`}
-							style={{ width: `${pct}%` }}
-						/>
-						<span
-							className="absolute top-[-3px] h-[14px] w-px bg-foreground/60"
-							style={{ left: `${thresholdPct}%` }}
-							aria-hidden
-						/>
-					</div>
-				</div>
+				<span className="w-12 text-center tabular-nums">
+					<span className="text-base font-semibold">{product.on_shelf}</span>
+					<span className="text-[11px] text-muted-foreground">/{product.shelf_capacity}</span>
+				</span>
 				<StepButton label={`Add one ${product.product}`} onClick={() => onChange(product, 1)}>
-					<Plus className="h-4 w-4" aria-hidden />
+					<Plus className="h-3.5 w-3.5" aria-hidden />
 				</StepButton>
 			</div>
-		</article>
+			<span
+				className={`w-[62px] shrink-0 rounded-full border py-0.5 text-center text-[10.5px] font-medium ${status.tone}`}
+				title={on && product.refill_pending && !product.on_order ? "Refill requested" : status.label}
+			>
+				{status.label}
+			</span>
+		</li>
 	);
 }
 
@@ -238,7 +317,7 @@ function StepButton({
 			aria-label={label}
 			title={label}
 			onClick={onClick}
-			className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border hover:bg-muted"
+			className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border hover:bg-muted"
 		>
 			{children}
 		</button>
@@ -264,6 +343,10 @@ function toolSummary(detail: Record<string, unknown>): string | null {
 			return result.product
 				? `${result.on_shelf} on shelf, ${result.in_back_room} in back room`
 				: "All products";
+		case "get_demand_forecast":
+			return result.upcoming_occasion
+				? `${result.upcoming_occasion} in ${result.days_until_occasion} days · +${result.expected_uplift_percent}% demand · order ${result.recommended_order_quantity}, not the usual ${result.normal_order_quantity}`
+				: `No occasion coming up · normal demand · order ${result.recommended_order_quantity}`;
 		case "get_sales_rate":
 			return `${result.sold_per_day} sold per day · suggest ordering ${result.suggested_order_quantity}`;
 		case "get_supplier_quotes": {
@@ -281,7 +364,9 @@ function toolSummary(detail: Record<string, unknown>): string | null {
 		case "get_order_status":
 			return `${result.count} order(s)`;
 		case "schedule_callback":
-			return `Will ring the ${result.will_call ?? "supervisor"} back in ${result.in_minutes} min`;
+			return result.checks_shelf
+				? `Will check the shelf in ${result.in_minutes} min · rings again only if it is not refilled`
+				: `Will ring the ${result.will_call ?? "supervisor"} back in ${result.in_minutes} min`;
 		case "get_refill_tasks":
 			return `${result.count} open task(s)`;
 		case "complete_refill_task":

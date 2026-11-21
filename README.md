@@ -1,6 +1,9 @@
-# Asha: the shelf agent that calls you
+# AgentsMart: the autonomous market, powered by agents
 
-A voice agent for a supermarket. A camera watches the shelf. When a product
+The shelf that makes the call itself. The voice on the phone introduces
+herself as **Asha**; the demo store is **FreshMart**.
+
+Voice agents for a supermarket. A camera watches the shelf. When a product
 runs low, the agent works out what to do and **phones the right person**:
 
 - Stock is in the back room → it calls the **floor employee**, in Hinglish, and

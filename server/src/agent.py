@@ -31,7 +31,11 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_MURF_BASE_URL = "wss://global.api.murf.ai/v1/speech/stream-input"
 # If the agent has said nothing for this long while it works, Agora speaks a
 # short filler phrase so the pause does not sound like a dropped call.
-FILLER_AFTER_MS = int(os.getenv("FILLER_AFTER_MS", "1200"))
+# Agora's only trigger is "the model has not spoken for N ms"; it cannot tell a
+# tool lookup from an ordinary reply. So N sits above a normal reply (about
+# 1 to 1.5 s) and below a tool lookup (about 4 s): at 1200 the agent said
+# "one second" before almost every sentence.
+FILLER_AFTER_MS = int(os.getenv("FILLER_AFTER_MS", "2500"))
 
 
 def filler_words(role: str) -> Dict[str, Any]:
